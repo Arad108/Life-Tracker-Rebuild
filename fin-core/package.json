@@ -1,0 +1,16 @@
+{
+  "name": "life-tracker-fin-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Pure financial domain logic for the Life Tracker Financial Space (posting rules + calculation engine).",
+  "main": "src/index.ts",
+  "scripts": {
+    "test": "node --import ./test/ts-resolve.mjs --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}

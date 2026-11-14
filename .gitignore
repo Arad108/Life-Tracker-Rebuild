@@ -1,0 +1,5 @@
+# This repository holds the rebuild source, not the reverse-engineering artefacts.
+# The APK, decompiled bundle, disassembly and analysis dumps stay local.
+/*
+!/.gitignore
+!/fin-core/
