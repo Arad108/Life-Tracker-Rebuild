@@ -2,6 +2,7 @@ import { Stack } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { runFinancialMigrations } from '../../fin-core/src/db';
 import { makeDriver } from '../src/db';
+import { runAppMigrations } from '../src/appMigrations';
 
 export default function RootLayout() {
   const [ready, setReady] = useState(false);
@@ -12,6 +13,7 @@ export default function RootLayout() {
       try {
         const driver = makeDriver();
         await runFinancialMigrations(driver, { now: () => Date.now() });
+        await runAppMigrations();
         setReady(true);
       } catch (e) {
         setError(String(e));
