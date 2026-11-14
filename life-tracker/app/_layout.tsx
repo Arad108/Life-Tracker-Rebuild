@@ -1,6 +1,6 @@
 import { Stack } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { runFinancialMigrations } from '../src/fin-core/db';
+import { runFinancialMigrations } from '../../fin-core/src/db';
 import { makeDriver } from '../src/db';
 
 export default function RootLayout() {

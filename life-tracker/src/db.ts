@@ -1,5 +1,5 @@
 import * as SQLite from 'expo-sqlite';
-import type { SqliteDriver } from './fin-core/db';
+import type { SqliteDriver } from '../../fin-core/src/db';
 
 let db: SQLite.SQLiteDatabase | null = null;
 
