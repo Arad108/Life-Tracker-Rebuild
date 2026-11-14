@@ -3,3 +3,12 @@
 /*
 !/.gitignore
 !/fin-core/
+!/life-tracker/
+# Keep build outputs and dependencies out of git
+/life-tracker/node_modules/
+/life-tracker/.expo/
+/life-tracker/android/
+/life-tracker/ios/
+/life-tracker/dist/
+/life-tracker/*.jks
+/life-tracker/*.keystore
