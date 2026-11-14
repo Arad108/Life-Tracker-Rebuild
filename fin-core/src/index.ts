@@ -11,3 +11,4 @@ export * from './money';
 export * from './posting';
 export * from './calc';
 export * from './balances';
+export * from './db';

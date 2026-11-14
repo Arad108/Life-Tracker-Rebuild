@@ -1,13 +1,16 @@
-# fin-core — posting rules + calculation engine
+# fin-core — posting rules, calculation engine, and database layer
 
 Pure TypeScript for the Financial Space. **No React, no React Native, no expo-sqlite, no imports from the app repository.** Every function is deterministic: rows in, numbers out.
 
-Two deliverables live here:
+Deliverables:
 
 | Module | Task | What it decides |
 |---|---|---|
 | `src/posting.ts` | I3 | Whether a movement is physically possible |
 | `src/calc.ts`, `src/balances.ts` | I6 | What the numbers are |
+| `src/db/` | I0, I1, I2 | How data is stored, restored and migrated |
+
+The database layer talks to a `SqliteDriver` (four async methods plus a transaction), never to expo-sqlite directly. The app supplies the adapter; the tests supply `node:sqlite`.
 
 ---
 
@@ -22,7 +25,19 @@ src/calc.ts       income, expenses, refunds, interest, netSpending, cashFlow,
 src/balances.ts   balanceOf, balancesByAccount, netWorth, liquidBalance, cardDebt
 src/index.ts      barrel
 
-test/*.test.ts    fixtures + tests (node:test, no framework)
+src/db/driver.ts       SqliteDriver, withTransaction
+src/db/schema.ts       recovered DDL, indexes, settings keys
+src/db/introspect.ts   inspectSchema, hasColumn, primary-key metadata
+src/db/settings.ts     typed get/set/delete on the app's `settings` table
+src/db/hash.ts         64-bit FNV-1a content hash for duplicate-restore detection
+src/db/backup.ts       exportBackup, parseBackup, planRestore, restoreBackup
+src/db/migrations.ts   migrateAccounts (I1), migrateKinds (I2), sign detection
+src/db/mapping.ts      row ↔ Transaction/Account, loadTransactions/loadAccounts
+src/db/writes.ts       recordTransaction, recordTransfer, recordRefund
+src/db/index.ts        barrel
+
+test/*.test.ts         fixtures + tests (node:test, no framework)
+test/db/*.test.ts      real SQLite: restore, migrations, end-to-end
 ```
 
 ---
@@ -88,6 +103,55 @@ Every metric also carries `inputs` (where the number came from) and optional `no
 
 ---
 
+## Database layer
+
+### Restore (I0)
+
+The backup format is the shipped app's own export, recovered from the APK rather than invented:
+
+```json
+{
+  "app": "life-tracker",
+  "backupVersion": 2,
+  "schemaVersion": 3,
+  "exportedAt": "2026-11-15T10:00:00.000Z",
+  "note": "Photos are stored on the phone and are not included in this file.",
+  "settings": [ ... ],
+  "fin_transactions": [ ... ]
+}
+```
+
+Table rows sit at the **top level** (no `tables` wrapper), written with `JSON.stringify(data, null, 2)`. The app has no import path, so `src/db/backup.ts` is the missing half:
+
+```ts
+const result = await restoreBackupText(driver, text);            // merge (default)
+const replaced = await restoreBackupText(driver, text, { mode: 'replace' });
+```
+
+- Structure and version are validated **before** any write. Unknown tables, unknown columns, missing required tables, wrong app, or a newer `backupVersion` are refused.
+- Every write runs in one transaction with `PRAGMA defer_foreign_keys = ON`, so a failure rolls back completely and file table order does not matter.
+- `merge` upserts by primary key and preserves rows the file does not contain. `replace` is opt-in and only clears tables present in the file.
+- Re-applying the same file is detected by a content hash in `settings.last_restore_hash` and returns `already-restored` instead of duplicating rows.
+
+### Migrations (I1, I2)
+
+```ts
+const report = await runFinancialMigrations(driver);
+report.userVersion;              // the real PRAGMA user_version, read not written
+report.defaultCashAccountId;     // reused if a cash account already exists
+report.sign;                     // negated | already-signed | mixed | no-expenses
+report.warnings;                 // show these
+```
+
+- **I1** adds `fin_accounts` and `account_id`, creates a default Cash account (stable id, `ON CONFLICT` safe), and backfills every unassigned transaction into it. Running it twice adds no account and changes no row.
+- **I2** adds `kind`, `transfer_id`, `refund_of_id`, `status`, `deleted_at`, backfills `kind` from the legacy `type`, and converts expense magnitudes to signed paise.
+- Sign detection runs on the data, not on an assumption: all-positive is negated, already-signed is a no-op, **mixed is left untouched** and flagged with `fin_repair_required`. A `settings` ledger key makes each step run at most once; the structural changes are also guarded by `PRAGMA table_info`.
+- `PRAGMA user_version` belongs to the app's own migration runner, so it is read and reported but never written. This library keeps its ledger in `settings`.
+
+Restore and migration compose as **migrate → restore → migrate**: a backup may already contain I2 columns, and restoring invalidates the migration ledger so the next run re-detects the sign convention from the restored data.
+
+---
+
 ## Running
 
 ```bash
@@ -116,7 +180,7 @@ npm run typecheck  # tsc --noEmit
 
 ## Not in scope here
 
-- No SQL, no queries, no persistence.
 - No formatting (`₹1,23,456` is a UI concern).
 - No budgets, goals, bills or imports — those consume these functions.
 - No chart data shaping.
+- No expo-sqlite adapter, screens, or navigation — the app side supplies those.

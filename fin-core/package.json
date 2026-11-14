@@ -6,7 +6,7 @@
   "description": "Pure financial domain logic for the Life Tracker Financial Space (posting rules + calculation engine).",
   "main": "src/index.ts",
   "scripts": {
-    "test": "node --import ./test/ts-resolve.mjs --test test/*.test.ts",
+    "test": "node --import ./test/ts-resolve.mjs --test test/*.test.ts test/db/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
