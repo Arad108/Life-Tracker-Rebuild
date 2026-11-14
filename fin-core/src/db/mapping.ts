@@ -33,6 +33,7 @@ export interface FinTransactionRow {
   readonly refund_of_id: string | null;
   readonly status: string | null;
   readonly deleted_at: number | null;
+  readonly bill_due_day: string | null;
 }
 
 export interface FinAccountRow {
@@ -83,6 +84,8 @@ export function toTransaction(row: FinTransactionRow): Transaction {
     status: statusOf(row.status),
     transferId: row.transfer_id,
     refundOfId: row.refund_of_id,
+    recurringId: row.recurring_id,
+    billDueDay: row.bill_due_day,
     deletedAt: row.deleted_at,
     currency: row.currency,
     note: row.note ?? '',

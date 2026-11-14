@@ -83,6 +83,10 @@ export interface Transaction {
   readonly transferId?: string | null;
   /** Set on a refund, pointing at the original expense. */
   readonly refundOfId?: string | null;
+  /** Set when a transaction was created by marking a bill paid. */
+  readonly recurringId?: string | null;
+  /** The bill occurrence this payment covers. */
+  readonly billDueDay?: string | null;
   /** Soft delete. A non-null value hides the row from everything. */
   readonly deletedAt?: number | null;
   readonly currency?: string;

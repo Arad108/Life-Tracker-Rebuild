@@ -15,4 +15,6 @@ export * from './backup';
 export * from './mapping';
 export * from './writes';
 export * from './budgets';
+export * from './bills';
+export * from './snapshots';
 export * from './migrations';

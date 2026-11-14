@@ -120,6 +120,60 @@ export const BUDGET_INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_fin_budgets_category ON fin_budgets (category_id, period_kind, period_key);
 `;
 
+/**
+ * I8 — bill skips.
+ *
+ * A skip is a decision about one occurrence, not a deletion. Recording it means
+ * "this month I did not pay, and here is why" survives in the history instead of
+ * vanishing when `next_day` advances. The unique index makes skipping twice
+ * impossible and gives the deterministic id its guarantee.
+ */
+export const FIN_BILL_SKIPS_DDL = `
+  CREATE TABLE IF NOT EXISTS fin_bill_skips (
+    id TEXT PRIMARY KEY NOT NULL,
+    bill_id TEXT NOT NULL REFERENCES fin_recurring(id) ON DELETE CASCADE,
+    due_day TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+  );
+`;
+
+/**
+ * I10 — net worth snapshots.
+ *
+ * One row per period, never per account: the per-account balances are stored in
+ * `accounts` as JSON because the only consumer is a comparison, and a second
+ * table would duplicate what `fin_accounts` already knows. The row is the
+ * observation; `created_at`/`updated_at` record when the observation was taken.
+ *
+ * `period_kind` is `month` (key `YYYY-MM`) or `day` (key `YYYY-MM-DD`). The
+ * unique index on `(period_kind, period_key)` is what makes repeated snapshot
+ * creation idempotent at the database level, not just in code.
+ */
+export const FIN_SNAPSHOTS_DDL = `
+  CREATE TABLE IF NOT EXISTS fin_snapshots (
+    id TEXT PRIMARY KEY NOT NULL,
+    period_kind TEXT NOT NULL DEFAULT 'month',
+    period_key TEXT NOT NULL,
+    as_of_day TEXT NOT NULL,
+    net_worth_minor INTEGER NOT NULL,
+    assets_minor INTEGER NOT NULL,
+    liabilities_minor INTEGER NOT NULL,
+    liquid_minor INTEGER NOT NULL,
+    accounts TEXT NOT NULL DEFAULT '[]',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+`;
+
+/** Added by I8/I10, after the tables exist. */
+export const BILL_INDEXES = `
+  CREATE INDEX IF NOT EXISTS idx_fin_recurring_due ON fin_recurring (active, next_day);
+  CREATE INDEX IF NOT EXISTS idx_fin_tx_recurring ON fin_transactions (recurring_id, bill_due_day);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_fin_bill_skips_due ON fin_bill_skips (bill_id, due_day);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_fin_snapshots_period ON fin_snapshots (period_kind, period_key);
+`;
+
 /** Indexes that already existed in the app. */
 export const LEGACY_INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_fin_tx_day ON fin_transactions (day);
@@ -151,6 +205,7 @@ export const SETTING_KEYS = {
   accountsMigrated: 'fin_m0001_accounts',
   kindsMigrated: 'fin_m0002_kinds',
   budgetsMigrated: 'fin_m0003_budgets',
+  billsMigrated: 'fin_m0004_bills',
   signMigrated: 'fin_sign_v1',
   signMixed: 'fin_sign_mixed',
   repairRequired: 'fin_repair_required',

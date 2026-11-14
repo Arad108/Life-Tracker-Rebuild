@@ -32,6 +32,7 @@ import { getSetting, setSetting } from './settings';
 import { withTransaction } from './driver';
 import type { SqliteDriver } from './driver';
 import { migrateBudgets } from './budgets';
+import { migrateBills } from './bills';
 
 export type SignMigrationStatus =
   | 'no-expenses'
@@ -58,6 +59,8 @@ export interface MigrationReport {
   readonly sign: SignMigrationStatus;
   /** Budget records created from the old goal budgets on the first run. */
   readonly budgetsCreated: number;
+  /** Recurring bills that were backfilled onto the default Cash account. */
+  readonly billsBackfilled: number;
   readonly warnings: readonly string[];
 }
 
@@ -316,9 +319,10 @@ export async function runFinancialMigrations(
   const accounts = await migrateAccounts(driver, options);
   const kinds = await migrateKinds(driver, options);
   const budgets = await migrateBudgets(driver, options);
+  const bills = await migrateBills(driver, options);
 
   await setSetting(driver, SETTING_KEYS.userVersionSeen, String(userVersion));
-  await setSetting(driver, SETTING_KEYS.schemaVersion, '3');
+  await setSetting(driver, SETTING_KEYS.schemaVersion, '4');
 
   return {
     userVersion,
@@ -326,16 +330,19 @@ export async function runFinancialMigrations(
       ...(accounts.applied ? [SETTING_KEYS.accountsMigrated] : []),
       ...(kinds.applied ? [SETTING_KEYS.kindsMigrated] : []),
       ...(budgets.applied ? [SETTING_KEYS.budgetsMigrated] : []),
+      ...(bills.applied ? [SETTING_KEYS.billsMigrated] : []),
     ],
     skipped: [
       ...(!accounts.applied ? [SETTING_KEYS.accountsMigrated] : []),
       ...(!kinds.applied ? [SETTING_KEYS.kindsMigrated] : []),
       ...(!budgets.applied ? [SETTING_KEYS.budgetsMigrated] : []),
+      ...(!bills.applied ? [SETTING_KEYS.billsMigrated] : []),
     ],
     defaultCashAccountId: accounts.cashAccountId,
     backfilledTransactions: accounts.backfilled,
     sign: kinds.sign,
     budgetsCreated: budgets.created,
-    warnings: [...accounts.warnings, ...kinds.warnings, ...budgets.warnings],
+    billsBackfilled: bills.backfilled,
+    warnings: [...accounts.warnings, ...kinds.warnings, ...budgets.warnings, ...bills.warnings],
   };
 }

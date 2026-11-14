@@ -9,7 +9,8 @@ Deliverables:
 | `src/posting.ts` | I3 | Whether a movement is physically possible |
 | `src/calc.ts`, `src/balances.ts` | I6 | What the numbers are |
 | `src/budgets.ts` | I7 | What a budget period has consumed |
-| `src/db/` | I0, I1, I2, I4, I5, I7 | How data is stored, restored, migrated and paired |
+| `src/bills.ts`, `src/available.ts`, `src/networth.ts`, `src/dates.ts` | I8, I9, I10 | Bills, available-to-spend, net worth, day arithmetic |
+| `src/db/` | I0–I10 | Storage, restore, migrations, transfers, refunds, budgets, bills, snapshots |
 
 The database layer talks to a `SqliteDriver` (four async methods plus a transaction), never to expo-sqlite directly. The app supplies the adapter; the tests supply `node:sqlite`.
 
@@ -25,6 +26,10 @@ src/calc.ts       income, expenses, refunds, interest, netSpending, cashFlow,
                   savingsRate, transfers, summarise
 src/balances.ts   balanceOf, balancesByAccount, netWorth, liquidBalance, cardDebt
 src/budgets.ts    monthRange, budgetSpend, budgetProgress, summariseBudgets
+src/bills.ts      advanceDue, billOccurrences, billStateAt, upcomingBills
+src/available.ts  availableToSpend, availableBreakdown
+src/networth.ts   netWorthBreakdown, liquidNetWorth, compareNetWorth, netWorthSeries
+src/dates.ts      addDays, addMonths, daysBetween, todayKey
 src/index.ts      barrel
 
 src/db/driver.ts       SqliteDriver, withTransaction
@@ -35,9 +40,8 @@ src/db/hash.ts         64-bit FNV-1a content hash for duplicate-restore detectio
 src/db/backup.ts       exportBackup, parseBackup, planRestore, restoreBackup
 src/db/migrations.ts   migrateAccounts (I1), migrateKinds (I2), migrateBudgets (I7)
 src/db/mapping.ts      row ↔ Transaction/Account, loadTransactions/loadAccounts
-src/db/writes.ts       recordTransaction, transfers (I4), refunds (I5)
-src/db/budgets.ts      setBudget, getBudget, listBudgets, clearBudget, migrateBudgets
-src/db/index.ts        barrel
+src/db/bills.ts      createBill, recordBillPayment, skipBillOccurrence, loadUpcomingBills
+src/db/snapshots.ts  createSnapshot, ensureMonthlySnapshot, listSnapshots
 
 test/*.test.ts         fixtures + tests (node:test, no framework)
 test/db/*.test.ts      real SQLite: restore, migrations, end-to-end
@@ -191,28 +195,60 @@ await loadRefundsFor(driver, 'expense-1');   // rows for the history view
 - Deleting an expense that still has refunds is refused (`expense-has-refunds`) unless `refundStrategy: 'cascade'` is passed. Reducing an expense below what was already refunded is refused too.
 - `deleteRefund` frees the limit again without touching the original.
 
-### Budgets as records (I7)
+### Bills (I8)
 
-The shipped app stored a budget as a mutable goal target (`kind='limit'`, `metric='spend'` or `'spend:cat:<id>'`); `setBudget` overwrote the target, so history was impossible. Budgets are now records:
-
-```
-fin_budgets(id, category_id NULL=overall, amount_minor, period_kind,
-            period_key YYYY-MM | start_day/end_day, created_at, updated_at)
-```
+The shipped app stored a recurring payment as a schedule that "Mark paid" recorded
+as a marker rather than a transaction. Bills are now schedules whose payment is a
+real ledger row:
 
 ```ts
-await setBudget(driver, { categoryId: null, period: { kind: 'month', month: '2026-11' },
-                         amountMinor: 2_000_000 });
-const budgets = await listBudgets(driver, { from: '2026-11-01', to: '2026-11-30' });
-summariseBudgets(budgets, transactions); // spent, remaining, exceeded, status
+await createBill(driver, {
+  id: 'rent', title: 'Rent', amountMinor: 1_800_000, accountId: 'acc-bank',
+  cadence: 'monthly', nextDueDay: '2026-11-01', categoryId: 'cat-rent',
+});
+await recordBillPayment(driver, { billId: 'rent', paidDay: '2026-11-02', amountMinor: 1_750_000 });
+await skipBillOccurrence(driver, { billId: 'rent', reason: 'waived' });
 ```
 
-- One record per category and period, with a deterministic id, so a retried write updates instead of duplicating.
-- Editing a future period never rewrites a past one. Deleting a budget removes only that period's record.
-- Periods are a calendar month or an explicit inclusive range; `monthRange` handles leap years.
-- Spending is `expenses - refunds + interest` (transfers and adjustments excluded, `excluded` rows skipped, `pending` counted, matching I6). An uncategorised refund is attributed to the category of the expense it reverses.
-- `budgetProgress` reports `spentMinor`, `remainingMinor` (negative when over), `exceededMinor`, `percentUsed` and `status: 'under' | 'at' | 'over'`, plus notes when refunds changed the figure.
-- Migration copies goal budgets and the legacy `fin_categories.budget_minor` column into records for the migration month. Only the current value is recoverable — the old model kept nothing else — and the goals are left in place rather than deleted.
+- Cadences `weekly`, `monthly`, `quarterly`, `yearly`, with month-end clamping.
+- `nextDueDay` is the next unpaid occurrence; `recordBillPayment` creates one
+  expense/income row linked by `recurring_id` + `bill_due_day`, then advances
+  the schedule. Tapping twice returns `created: false` instead of a second row.
+- Variable amounts fall back to `lastAmountMinor`; skips are recorded in
+  `fin_bill_skips` so history is not silently lost; cancelling soft-deletes the
+  schedule and keeps payments.
+- `billOccurrences`, `upcomingBills`, `billStateAt` report
+  `upcoming | due | overdue | paid | skipped | cancelled` with a tolerance window.
+
+### Available to spend (I9)
+
+```ts
+const result = availableToSpend(accounts, transactions, {
+  asOf: '2026-11-15', horizonDays: 7, bills, budgets,
+});
+result.value;          // the number
+result.committedBillsMinor;
+availableBreakdown(result); // components that sum exactly to value
+```
+
+`liquid + cards - unpaid bills in the horizon - reserved budget`, with pending and
+excluded rows counted once (they already move balances). A budget is a cap and is
+only reserved when `reserveBudgetRemaining` is set.
+
+### Net worth + snapshots (I10)
+
+```ts
+const breakdown = netWorthBreakdown(accounts, transactions, '2026-11-30');
+const snapshot = await createSnapshot(driver, { periodKey: '2026-11', asOfDay: '2026-11-30' });
+const comparison = compareNetWorth(octoberSnapshot, novemberSnapshot);
+```
+
+- Assets, liabilities, liquid net worth and invested/loan figures from the same
+  balance equation; transfers net to zero.
+- `createSnapshot` is idempotent per period and never overwrites an existing
+  observation, so back-dated transactions cannot rewrite history. Overwrite is
+  explicit.
+- `netWorthSeries` feeds a trend chart without any recalculation.
 
 ---
 
@@ -250,6 +286,6 @@ npm run typecheck  # tsc --noEmit
 ## Not in scope here
 
 - No formatting (`₹1,23,456` is a UI concern).
-- No bills or imports — those consume these functions.
+- No imports or statement parsing — those consume these functions.
 - No chart data shaping.
 - No expo-sqlite adapter, screens, or navigation — the app side supplies those. The recovered UI is described in `analysis/`; these modules are the independently testable core it calls.

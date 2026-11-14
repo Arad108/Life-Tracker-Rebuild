@@ -43,9 +43,15 @@ export interface RecordTransactionInput {
   readonly status?: TransactionStatus;
   readonly transferId?: string | null;
   readonly refundOfId?: string | null;
+  /** Set by a bill payment, linking it to the schedule. */
+  readonly recurringId?: string | null;
+  /** The occurrence a bill payment covers. Prevents paying the same one twice. */
+  readonly billDueDay?: string | null;
   readonly note?: string;
   readonly payee?: string | null;
   readonly currency?: string;
+  /** Defaults to `manual`. Bill payments use `bill`. */
+  readonly source?: string;
 }
 
 export interface RecordTransferInput {
@@ -162,9 +168,12 @@ interface InsertRow {
   readonly status?: TransactionStatus;
   readonly transferId?: string | null;
   readonly refundOfId?: string | null;
+  readonly recurringId?: string | null;
+  readonly billDueDay?: string | null;
   readonly note?: string;
   readonly payee?: string | null;
   readonly currency?: string;
+  readonly source?: string;
 }
 
 async function insertRow(
@@ -176,8 +185,8 @@ async function insertRow(
     `INSERT INTO fin_transactions (
        id, type, kind, amount_minor, currency, category_id, occurred_at, day, note,
        method, for_whom, payee, recurring_id, source, external_id, extra,
-       created_at, updated_at, account_id, transfer_id, refund_of_id, status, deleted_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, 'manual', NULL, '{}', ?, ?, ?, ?, ?, ?, NULL)`,
+       created_at, updated_at, account_id, transfer_id, refund_of_id, status, deleted_at, bill_due_day
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, NULL, '{}', ?, ?, ?, ?, ?, ?, NULL, ?)`,
     [
       row.id,
       legacyType(row.kind),
@@ -189,12 +198,15 @@ async function insertRow(
       row.day,
       row.note ?? '',
       row.payee ?? null,
+      row.recurringId ?? null,
+      row.source ?? 'manual',
       now,
       now,
       row.accountId,
       row.transferId ?? null,
       row.refundOfId ?? null,
       row.status ?? 'posted',
+      row.billDueDay ?? null,
     ],
   );
 }
