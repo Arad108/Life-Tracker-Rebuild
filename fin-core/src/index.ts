@@ -16,4 +16,5 @@ export * from './bills';
 export * from './available';
 export * from './networth';
 export * from './dates';
+export * from './analytics';
 export * from './db';

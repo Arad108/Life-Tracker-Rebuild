@@ -17,4 +17,5 @@ export * from './writes';
 export * from './budgets';
 export * from './bills';
 export * from './snapshots';
+export * from './transactions';
 export * from './migrations';
