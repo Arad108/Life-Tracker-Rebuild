@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Text, View, ScrollView, Pressable } from 'react-native';
-import { runFinancialMigrations } from '../../fin-core/src/db';
+import { runFinancialMigrations } from '../fin-core/src/db';
 import { makeDriver } from '../src/db';
 import { fullBackup } from '../src/backup';
 import * as Sharing from 'expo-sharing';
@@ -46,3 +46,4 @@ export default function Settings() {
     </ScrollView>
   );
 }
+

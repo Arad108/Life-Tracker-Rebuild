@@ -1,0 +1,22 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true
+  },
+  "exclude": [
+    "node_modules",
+    "base.apk",
+    "decompiled.js",
+    "decompiled2.js",
+    "disasm.hasm",
+    "strings.txt",
+    "dec.log",
+    "analysis",
+    "extract",
+    "tools",
+    "architecture",
+    "fin-core",
+    "RECOVERY_CHECKLIST.md"
+  ]
+}
+

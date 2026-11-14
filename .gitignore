@@ -1,14 +1,26 @@
-# This repository holds the rebuild source, not the reverse-engineering artefacts.
-# The APK, decompiled bundle, disassembly and analysis dumps stay local.
-/*
-!/.gitignore
-!/fin-core/
-!/life-tracker/
-# Keep build outputs and dependencies out of git
-/life-tracker/node_modules/
-/life-tracker/.expo/
-/life-tracker/android/
-/life-tracker/ios/
-/life-tracker/dist/
-/life-tracker/*.jks
-/life-tracker/*.keystore
+# Reverse-engineering artifacts (stay local)
+base.apk
+decompiled.js
+decompiled2.js
+disasm.hasm
+strings.txt
+dec.log
+/analysis/
+/extract/
+/tools/
+/architecture/
+/research/
+/.claude/
+/FINANCIAL_SPACE_PRODUCT_RESEARCH.md
+/REPORT.md
+
+# Build outputs and dependencies
+node_modules/
+.expo/
+android/
+ios/
+dist/
+*.jks
+*.keystore
+npm-cache/
+.DS_Store

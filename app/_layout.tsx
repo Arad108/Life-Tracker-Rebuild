@@ -1,6 +1,6 @@
 import { Stack } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { runFinancialMigrations } from '../../fin-core/src/db';
+import { runFinancialMigrations } from '../fin-core/src/db';
 import { makeDriver } from '../src/db';
 import { runAppMigrations } from '../src/appMigrations';
 import { runExtendedMigrations } from '../src/extendedMigrations';
@@ -31,3 +31,4 @@ export default function RootLayout() {
   }
   return <Stack screenOptions={{ headerShown: true }} />;
 }
+

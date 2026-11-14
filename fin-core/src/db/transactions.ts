@@ -24,6 +24,7 @@ export interface TransactionQuery {
   readonly maxAmountMinor?: number;
   readonly recurringId?: string;
   readonly billDueDay?: string;
+  readonly source?: string;
   readonly includeDeleted?: boolean;
   readonly sortBy?: 'day' | 'amount' | 'created';
   readonly sortDirection?: 'asc' | 'desc';
@@ -82,6 +83,10 @@ export async function queryTransactions(
   if (query.billDueDay) {
     clauses.push('bill_due_day = ?');
     params.push(query.billDueDay);
+  }
+  if (query.source) {
+    clauses.push('source = ?');
+    params.push(query.source);
   }
   if (typeof query.minAmountMinor === 'number') {
     clauses.push('amount_minor >= ?');

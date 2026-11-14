@@ -1,7 +1,7 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import JSZip from 'jszip';
 import { makeDriver } from './db';
-import { exportBackup, serialiseBackup } from '../../fin-core/src/db';
+import { exportBackup, serialiseBackup } from '../fin-core/src/db';
 
 const PHOTO_DIR = `${FileSystem.documentDirectory}photos/`;
 
@@ -36,3 +36,4 @@ export async function fullBackup(): Promise<string> {
   await FileSystem.writeAsStringAsync(out, base64Zip, { encoding: FileSystem.EncodingType.Base64 });
   return out;
 }
+

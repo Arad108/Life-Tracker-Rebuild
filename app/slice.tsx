@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Text, View, ScrollView, Pressable } from 'react-native';
-import { queryTransactions, sliceSummary } from '../../fin-core/src';
+import { queryTransactions, sliceSummary } from '../fin-core/src';
 import { makeDriver } from '../src/db';
 
 export default function SliceLens() {
@@ -38,3 +38,4 @@ export default function SliceLens() {
     </ScrollView>
   );
 }
+

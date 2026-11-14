@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Text, View, ScrollView } from 'react-native';
-import { runFinancialMigrations, loadAccounts, loadTransactions, balanceOf } from '../../fin-core/src';
+import { runFinancialMigrations, loadAccounts, loadTransactions, balanceOf } from '../fin-core/src';
 import { makeDriver } from '../src/db';
 
 export default function Finance() {
@@ -36,3 +36,4 @@ export default function Finance() {
     </ScrollView>
   );
 }
+
