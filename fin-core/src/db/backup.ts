@@ -505,6 +505,7 @@ export async function restoreBackup(
     for (const key of [
       SETTING_KEYS.accountsMigrated,
       SETTING_KEYS.kindsMigrated,
+      SETTING_KEYS.budgetsMigrated,
       SETTING_KEYS.signMigrated,
       SETTING_KEYS.signMixed,
       SETTING_KEYS.repairRequired,

@@ -73,3 +73,15 @@ export async function hasColumn(
 ): Promise<boolean> {
   return (await tableColumns(driver, table)).has(column);
 }
+
+/** True when a table exists. Used by migrations that must tolerate old databases. */
+export async function tableExists(
+  driver: SqliteDriver,
+  table: string,
+): Promise<boolean> {
+  const row = await driver.getFirstAsync<{ n: number }>(
+    "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name = ?",
+    [table],
+  );
+  return (row?.n ?? 0) > 0;
+}

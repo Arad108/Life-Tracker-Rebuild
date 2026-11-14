@@ -1,18 +1,27 @@
 /**
- * I2 — Writing signed ledger rows.
+ * Writing and maintaining signed ledger rows.
  *
  * Every write path funnels through I3's `validatePosting`, so an invalid movement
- * is rejected before it reaches SQLite. Transfers and refunds get dedicated
- * helpers because they are the two shapes that are easy to get subtly wrong:
- * a transfer must be a balanced pair, and a refund must point at a real expense.
+ * is rejected before it reaches SQLite. The shapes that are easy to get subtly
+ * wrong get dedicated helpers:
+ *
+ *   - a transfer is exactly two balanced legs sharing one `transferId`;
+ *   - a refund is positive, linked to a real expense, and never exceeds it;
+ *   - deleting an expense with refunds is explicit, not accidental.
+ *
+ * Transfers and refunds are *edited*, not deleted-and-reinserted, so a row keeps
+ * its id, creation time and history. Deletion is always soft (`deleted_at`), which
+ * keeps the backup and the audit trail intact.
  */
 
 import { validatePosting, validateTransferPair } from '../posting';
 import type { TransferLeg } from '../posting';
 import { isDayKey } from '../money';
-import type { AccountType, TransactionKind, TransactionStatus } from '../types';
+import type { AccountType, Transaction, TransactionKind, TransactionStatus } from '../types';
 import type { SqliteDriver } from './driver';
 import { withTransaction } from './driver';
+import { toTransaction } from './mapping';
+import type { FinTransactionRow } from './mapping';
 
 export class LedgerError extends Error {
   readonly code: string;
@@ -62,6 +71,10 @@ export interface RecordRefundInput {
   readonly status?: TransactionStatus;
 }
 
+export interface WriteOptions {
+  readonly now?: () => number;
+}
+
 interface AccountLookup {
   readonly id: string;
   readonly type: AccountType;
@@ -102,6 +115,41 @@ function occurredAtFor(day: string): number {
  */
 function legacyType(kind: TransactionKind): string {
   return kind;
+}
+
+function kindOf(row: { readonly kind: string | null; readonly type: string }): string {
+  return row.kind ?? row.type;
+}
+
+async function loadLiveRow(
+  driver: SqliteDriver,
+  id: string,
+): Promise<FinTransactionRow> {
+  const row = await driver.getFirstAsync<FinTransactionRow>(
+    'SELECT * FROM fin_transactions WHERE id = ?',
+    [id],
+  );
+  if (!row) {
+    throw new LedgerError('transaction-not-found', `No transaction with id "${id}".`);
+  }
+  if (row.deleted_at !== null) {
+    throw new LedgerError('transaction-deleted', `Transaction "${id}" has been deleted.`);
+  }
+  return row;
+}
+
+async function requireAccountId(
+  driver: SqliteDriver,
+  accountId: string | null,
+  id: string,
+): Promise<string> {
+  if (!accountId) {
+    throw new LedgerError(
+      'account-required',
+      `Transaction "${id}" has no account. Run the account migration first.`,
+    );
+  }
+  return accountId;
 }
 
 interface InsertRow {
@@ -151,9 +199,9 @@ async function insertRow(
   );
 }
 
-export interface WriteOptions {
-  readonly now?: () => number;
-}
+// ---------------------------------------------------------------------------
+// Single rows
+// ---------------------------------------------------------------------------
 
 export async function recordTransaction(
   driver: SqliteDriver,
@@ -176,16 +224,255 @@ export async function recordTransaction(
   await insertRow(driver, input, (options.now ?? Date.now)());
 }
 
+export interface UpdateTransactionInput {
+  readonly id: string;
+  readonly kind?: TransactionKind;
+  readonly accountId?: string;
+  readonly amountMinor?: number;
+  readonly day?: string;
+  readonly categoryId?: string | null;
+  readonly note?: string;
+  readonly payee?: string | null;
+  readonly status?: TransactionStatus;
+}
+
+/**
+ * Edit an expense, income, interest or adjustment row.
+ *
+ * Transfers and refunds have dedicated helpers: a transfer must stay a balanced
+ * pair, and a refund must stay within its original expense. Reaching this
+ * function with either kind is a programming error, not a user error.
+ */
+export async function updateTransaction(
+  driver: SqliteDriver,
+  input: UpdateTransactionInput,
+  options: WriteOptions = {},
+): Promise<void> {
+  const row = await loadLiveRow(driver, input.id);
+  const existingKind = kindOf(row);
+
+  if (existingKind === 'transfer' || row.transfer_id !== null) {
+    throw new LedgerError(
+      'use-transfer-api',
+      'Edit a transfer with updateTransfer() so both legs stay balanced.',
+    );
+  }
+  if (existingKind === 'refund') {
+    await updateRefund(driver, input, options);
+    return;
+  }
+
+  const kind = input.kind ?? (existingKind as TransactionKind);
+  if (kind === 'transfer') {
+    throw new LedgerError(
+      'use-transfer-api',
+      'Create and edit transfers with recordTransfer()/updateTransfer().',
+    );
+  }
+  if (kind === 'refund') {
+    throw new LedgerError(
+      'use-refund-api',
+      'Create and edit refunds with recordRefund()/updateRefund() so the link is preserved.',
+    );
+  }
+
+  const accountId = await requireAccountId(
+    driver,
+    input.accountId ?? row.account_id,
+    input.id,
+  );
+  const account = await lookupAccount(driver, accountId);
+  const amountMinor = input.amountMinor ?? row.amount_minor;
+  const day = input.day ?? row.day;
+
+  // Check the refund guard before posting rules: an expense that already has
+  // refunds cannot change kind at all, and that is a clearer message than
+  // "income cannot be posted to a card".
+  const refunded = await refundedTotalFor(driver, input.id);
+  if (refunded > 0) {
+    if (kind !== 'expense') {
+      throw new LedgerError(
+        'expense-has-refunds',
+        'This expense has refunds, so it cannot be turned into another kind.',
+      );
+    }
+    if (Math.abs(amountMinor) < refunded) {
+      throw new LedgerError(
+        'refund-exceeds-expense',
+        `This expense has ${refunded} paise refunded, so its amount cannot be reduced below that.`,
+      );
+    }
+  }
+
+  const check = validatePosting({
+    kind,
+    accountType: account.type,
+    amountMinor,
+    day,
+  });
+  if (!check.ok) throw new LedgerError(check.code, check.message);
+
+  const now = (options.now ?? Date.now)();
+  await driver.runAsync(
+    `UPDATE fin_transactions
+        SET type = ?, kind = ?, amount_minor = ?, account_id = ?, category_id = ?,
+            occurred_at = ?, day = ?, note = ?, payee = ?, status = ?, updated_at = ?
+      WHERE id = ?`,
+    [
+      legacyType(kind),
+      kind,
+      amountMinor,
+      accountId,
+      input.categoryId !== undefined ? input.categoryId : row.category_id,
+      occurredAtFor(day),
+      day,
+      input.note ?? row.note ?? '',
+      input.payee !== undefined ? input.payee : row.payee,
+      input.status ?? row.status ?? 'posted',
+      now,
+      input.id,
+    ],
+  );
+}
+
+export interface DeleteTransactionOptions extends WriteOptions {
+  /**
+   * What to do when an expense already has refunds.
+   *
+   * `block` (default) refuses the deletion so the ledger cannot be left with
+   * refunds pointing at nothing. `cascade` soft-deletes the refunds with it.
+   */
+  readonly refundStrategy?: 'block' | 'cascade';
+}
+
+export interface DeleteTransactionResult {
+  readonly deleted: number;
+  readonly refundsDeleted: number;
+}
+
+/** Soft-delete one row, guarding refunds and delegating transfers. */
+export async function deleteTransaction(
+  driver: SqliteDriver,
+  id: string,
+  options: DeleteTransactionOptions = {},
+): Promise<DeleteTransactionResult> {
+  const row = await loadLiveRow(driver, id);
+  const kind = kindOf(row);
+  const now = (options.now ?? Date.now)();
+
+  if (kind === 'transfer') {
+    if (!row.transfer_id) {
+      throw new LedgerError(
+        'transfer-id-required',
+        'This transfer leg has no transferId, so its pair cannot be removed with it.',
+      );
+    }
+    const deleted = await deleteTransfer(driver, row.transfer_id, { now: () => now });
+    return { deleted: deleted.deleted, refundsDeleted: 0 };
+  }
+
+  if (kind === 'refund') {
+    await driver.runAsync(
+      'UPDATE fin_transactions SET deleted_at = ?, updated_at = ? WHERE id = ?',
+      [now, now, id],
+    );
+    return { deleted: 1, refundsDeleted: 0 };
+  }
+
+  let refundsDeleted = 0;
+  if (kind === 'expense') {
+    const refunds = await loadRefundsFor(driver, id);
+    if (refunds.length > 0) {
+      if ((options.refundStrategy ?? 'block') === 'block') {
+        throw new LedgerError(
+          'expense-has-refunds',
+          `This expense has ${refunds.length} refund(s). Delete them first, or pass refundStrategy: 'cascade'.`,
+        );
+      }
+      const result = await driver.runAsync(
+        'UPDATE fin_transactions SET deleted_at = ?, updated_at = ? WHERE refund_of_id = ? AND deleted_at IS NULL',
+        [now, now, id],
+      );
+      refundsDeleted = result.changes;
+    }
+  }
+
+  await driver.runAsync(
+    'UPDATE fin_transactions SET deleted_at = ?, updated_at = ? WHERE id = ?',
+    [now, now, id],
+  );
+  return { deleted: 1, refundsDeleted };
+}
+
+// ---------------------------------------------------------------------------
+// Transfers
+// ---------------------------------------------------------------------------
+
 export interface RecordTransferResult {
   readonly transferId: string;
   readonly ids: readonly [string, string];
+}
+
+export interface TransferPair {
+  readonly transferId: string;
+  readonly from: Transaction;
+  readonly to: Transaction;
+}
+
+async function readTransferRows(
+  driver: SqliteDriver,
+  transferId: string,
+): Promise<FinTransactionRow[]> {
+  return driver.getAllAsync<FinTransactionRow>(
+    'SELECT * FROM fin_transactions WHERE transfer_id = ? AND deleted_at IS NULL ORDER BY amount_minor, id',
+    [transferId],
+  );
+}
+
+function splitTransfer(
+  rows: readonly FinTransactionRow[],
+  transferId: string,
+): { readonly outLeg: FinTransactionRow; readonly inLeg: FinTransactionRow } {
+  if (rows.length === 0) {
+    throw new LedgerError('transfer-not-found', `No transfer with id "${transferId}".`);
+  }
+  if (rows.length !== 2) {
+    throw new LedgerError(
+      rows.length > 2 ? 'transfer-duplicate' : 'transfer-incomplete',
+      `Transfer "${transferId}" has ${rows.length} live leg(s); exactly two are required.`,
+    );
+  }
+
+  const [first, second] = rows as [FinTransactionRow, FinTransactionRow];
+  const outLeg = first.amount_minor < 0 ? first : second;
+  const inLeg = outLeg === first ? second : first;
+
+  if (
+    outLeg.amount_minor >= 0 ||
+    inLeg.amount_minor <= 0 ||
+    outLeg.amount_minor + inLeg.amount_minor !== 0
+  ) {
+    throw new LedgerError(
+      'transfer-incomplete',
+      `Transfer "${transferId}" is not balanced; its legs do not sum to zero.`,
+    );
+  }
+  if (kindOf(outLeg) !== 'transfer' || kindOf(inLeg) !== 'transfer') {
+    throw new LedgerError(
+      'transfer-incomplete',
+      `Transfer "${transferId}" has a leg that is not kind 'transfer'.`,
+    );
+  }
+
+  return { outLeg, inLeg };
 }
 
 /**
  * Insert both legs of a transfer in one transaction.
  *
  * Ids are derived from `transferId`, so retrying the same transfer hits the
- * primary key instead of creating a third leg.
+ * primary key instead of creating a third leg. An existing id is rejected
+ * outright: silently overwriting a transfer would be worse than refusing.
  */
 export async function recordTransfer(
   driver: SqliteDriver,
@@ -197,6 +484,17 @@ export async function recordTransfer(
   }
   if (!input.transferId || input.transferId.trim().length === 0) {
     throw new LedgerError('transfer-id-required', 'A transfer needs a non-empty transferId.');
+  }
+
+  const existing = await driver.getFirstAsync<{ n: number }>(
+    'SELECT COUNT(*) AS n FROM fin_transactions WHERE transfer_id = ?',
+    [input.transferId],
+  );
+  if ((existing?.n ?? 0) > 0) {
+    throw new LedgerError(
+      'transfer-exists',
+      `A transfer with id "${input.transferId}" already exists. Use updateTransfer() to change it.`,
+    );
   }
 
   const from = await lookupAccount(driver, input.fromAccountId);
@@ -272,11 +570,230 @@ export async function recordTransfer(
   return { transferId: input.transferId, ids };
 }
 
+export interface UpdateTransferInput {
+  readonly transferId: string;
+  readonly fromAccountId?: string;
+  readonly toAccountId?: string;
+  /** Positive magnitude; omit to keep the current amount. */
+  readonly amountMinor?: number;
+  readonly day?: string;
+  readonly note?: string;
+  readonly status?: TransactionStatus;
+}
+
 /**
- * Record a refund and prove it points at an expense.
+ * Edit a transfer in place.
  *
- * A refund is positive and linked; it is never fresh income. Rejecting a link to
- * a non-expense keeps the calculation honest even if the UI is wrong.
+ * Both legs are updated in one transaction, so a failure cannot leave a
+ * half-edited pair. Account, amount, day, note and status may all change; the
+ * `transferId` and row ids do not.
+ */
+export async function updateTransfer(
+  driver: SqliteDriver,
+  input: UpdateTransferInput,
+  options: WriteOptions = {},
+): Promise<RecordTransferResult> {
+  const rows = await readTransferRows(driver, input.transferId);
+  const { outLeg, inLeg } = splitTransfer(rows, input.transferId);
+
+  const fromId = await requireAccountId(
+    driver,
+    input.fromAccountId ?? outLeg.account_id,
+    outLeg.id,
+  );
+  const toId = await requireAccountId(
+    driver,
+    input.toAccountId ?? inLeg.account_id,
+    inLeg.id,
+  );
+  const amountMinor = input.amountMinor ?? -outLeg.amount_minor;
+  if (!Number.isSafeInteger(amountMinor) || amountMinor <= 0) {
+    throw new LedgerError('amount-invalid', 'A transfer amount must be a positive whole number of paise.');
+  }
+
+  const day = input.day ?? outLeg.day;
+  const note = input.note ?? outLeg.note ?? '';
+  const status = input.status ?? ((outLeg.status as TransactionStatus | null) ?? 'posted');
+
+  const from = await lookupAccount(driver, fromId);
+  const to = await lookupAccount(driver, toId);
+
+  const pair = validateTransferPair([
+    { accountId: from.id, amountMinor: -amountMinor, transferId: input.transferId, kind: 'transfer' },
+    { accountId: to.id, amountMinor, transferId: input.transferId, kind: 'transfer' },
+  ]);
+  if (!pair.ok) throw new LedgerError(pair.code, pair.message);
+
+  for (const [account, amount] of [
+    [from, -amountMinor],
+    [to, amountMinor],
+  ] as const) {
+    const check = validatePosting({
+      kind: 'transfer',
+      accountType: account.type,
+      amountMinor: amount,
+      transferId: input.transferId,
+      day,
+    });
+    if (!check.ok) throw new LedgerError(check.code, check.message);
+  }
+
+  const now = (options.now ?? Date.now)();
+  await withTransaction(driver, async () => {
+    await driver.runAsync(
+      `UPDATE fin_transactions
+          SET account_id = ?, amount_minor = ?, occurred_at = ?, day = ?, note = ?,
+              status = ?, updated_at = ?
+        WHERE id = ?`,
+      [from.id, -amountMinor, occurredAtFor(day), day, note, status, now, outLeg.id],
+    );
+    await driver.runAsync(
+      `UPDATE fin_transactions
+          SET account_id = ?, amount_minor = ?, occurred_at = ?, day = ?, note = ?,
+              status = ?, updated_at = ?
+        WHERE id = ?`,
+      [to.id, amountMinor, occurredAtFor(day), day, note, status, now, inLeg.id],
+    );
+  });
+
+  return { transferId: input.transferId, ids: [outLeg.id, inLeg.id] };
+}
+
+/** Soft-delete every live leg of a transfer, so no orphan can remain. */
+export async function deleteTransfer(
+  driver: SqliteDriver,
+  transferId: string,
+  options: WriteOptions = {},
+): Promise<{ readonly transferId: string; readonly deleted: number }> {
+  const rows = await readTransferRows(driver, transferId);
+  if (rows.length === 0) {
+    throw new LedgerError('transfer-not-found', `No transfer with id "${transferId}".`);
+  }
+
+  const now = (options.now ?? Date.now)();
+  const result = await driver.runAsync(
+    'UPDATE fin_transactions SET deleted_at = ?, updated_at = ? WHERE transfer_id = ? AND deleted_at IS NULL',
+    [now, now, transferId],
+  );
+  return { transferId, deleted: result.changes };
+}
+
+/** Load a healthy transfer pair. Throws when the pair is incomplete. */
+export async function loadTransfer(
+  driver: SqliteDriver,
+  transferId: string,
+): Promise<TransferPair | null> {
+  const rows = await readTransferRows(driver, transferId);
+  if (rows.length === 0) return null;
+  const { outLeg, inLeg } = splitTransfer(rows, transferId);
+  return {
+    transferId,
+    from: toTransaction(outLeg),
+    to: toTransaction(inLeg),
+  };
+}
+
+export interface TransferAuditEntry {
+  readonly transferId: string;
+  readonly legs: number;
+  readonly sumMinor: number;
+}
+
+/** Every live transfer that is not exactly two legs summing to zero. */
+export async function auditTransfers(
+  driver: SqliteDriver,
+): Promise<TransferAuditEntry[]> {
+  const rows = await driver.getAllAsync<{
+    transfer_id: string | null;
+    legs: number;
+    sum_minor: number | null;
+  }>(
+    `SELECT transfer_id, COUNT(*) AS legs, SUM(amount_minor) AS sum_minor
+       FROM fin_transactions
+      WHERE kind = 'transfer' AND deleted_at IS NULL
+      GROUP BY transfer_id
+     HAVING COUNT(*) <> 2 OR SUM(amount_minor) <> 0`,
+  );
+
+  return rows.map((row) => ({
+    transferId: row.transfer_id ?? '(missing)',
+    legs: row.legs,
+    sumMinor: row.sum_minor ?? 0,
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Refunds
+// ---------------------------------------------------------------------------
+
+export interface RefundedTotalOptions {
+  readonly excludeRefundId?: string;
+}
+
+/** Sum of live refunds linked to an expense. */
+export async function refundedTotalFor(
+  driver: SqliteDriver,
+  expenseId: string,
+  options: RefundedTotalOptions = {},
+): Promise<number> {
+  const row = await driver.getFirstAsync<{ total: number | null }>(
+    `SELECT COALESCE(SUM(amount_minor), 0) AS total
+       FROM fin_transactions
+      WHERE kind = 'refund' AND refund_of_id = ? AND deleted_at IS NULL AND id <> ?`,
+    [expenseId, options.excludeRefundId ?? ''],
+  );
+  return row?.total ?? 0;
+}
+
+/** Live refunds linked to an expense, for the transaction history. */
+export async function loadRefundsFor(
+  driver: SqliteDriver,
+  expenseId: string,
+): Promise<Transaction[]> {
+  const rows = await driver.getAllAsync<FinTransactionRow>(
+    `SELECT * FROM fin_transactions
+      WHERE kind = 'refund' AND refund_of_id = ? AND deleted_at IS NULL
+      ORDER BY day, id`,
+    [expenseId],
+  );
+  return rows.map(toTransaction);
+}
+
+async function requireExpenseForRefund(
+  driver: SqliteDriver,
+  expenseId: string,
+): Promise<FinTransactionRow> {
+  const original = await driver.getFirstAsync<FinTransactionRow>(
+    'SELECT * FROM fin_transactions WHERE id = ?',
+    [expenseId],
+  );
+  if (!original) {
+    throw new LedgerError(
+      'refund-original-missing',
+      `No transaction with id "${expenseId}" to refund.`,
+    );
+  }
+  if (original.deleted_at !== null) {
+    throw new LedgerError(
+      'refund-original-deleted',
+      'The expense being refunded has been deleted.',
+    );
+  }
+  if (kindOf(original) !== 'expense') {
+    throw new LedgerError(
+      'refund-original-not-expense',
+      'A refund can only reverse an expense.',
+    );
+  }
+  return original;
+}
+
+/**
+ * Record a refund and prove it points at a real, live expense.
+ *
+ * The refund may be partial, but the sum of all live refunds for one expense can
+ * never exceed the expense itself. The category defaults to the original's, so a
+ * category budget sees the refund even when the caller does not pass one.
  */
 export async function recordRefund(
   driver: SqliteDriver,
@@ -287,28 +804,9 @@ export async function recordRefund(
     throw new LedgerError('refund-link-required', 'A refund must point at the expense it reverses.');
   }
 
-  const original = await driver.getFirstAsync<{
-    id: string;
-    kind: string | null;
-    type: string;
-  }>(
-    'SELECT id, kind, type FROM fin_transactions WHERE id = ?',
-    [input.refundOfId],
-  );
-  if (!original) {
-    throw new LedgerError(
-      'refund-original-missing',
-      `No transaction with id "${input.refundOfId}" to refund.`,
-    );
-  }
-  if ((original.kind ?? original.type) !== 'expense') {
-    throw new LedgerError(
-      'refund-original-not-expense',
-      'A refund can only reverse an expense.',
-    );
-  }
-
+  const original = await requireExpenseForRefund(driver, input.refundOfId);
   const account = await lookupAccount(driver, input.accountId);
+
   const check = validatePosting({
     kind: 'refund',
     accountType: account.type,
@@ -318,6 +816,15 @@ export async function recordRefund(
   });
   if (!check.ok) throw new LedgerError(check.code, check.message);
 
+  const alreadyRefunded = await refundedTotalFor(driver, input.refundOfId);
+  const remaining = Math.abs(original.amount_minor) - alreadyRefunded;
+  if (input.amountMinor > remaining) {
+    throw new LedgerError(
+      'refund-exceeds-expense',
+      `This refund is ${input.amountMinor} paise, but only ${Math.max(0, remaining)} paise remain unrefunded.`,
+    );
+  }
+
   await insertRow(
     driver,
     {
@@ -326,11 +833,114 @@ export async function recordRefund(
       kind: 'refund',
       amountMinor: input.amountMinor,
       day: input.day,
-      categoryId: input.categoryId,
+      categoryId:
+        input.categoryId !== undefined ? input.categoryId : original.category_id,
       refundOfId: input.refundOfId,
       note: input.note,
       status: input.status,
     },
     (options.now ?? Date.now)(),
+  );
+}
+
+export interface UpdateRefundInput {
+  readonly id: string;
+  readonly amountMinor?: number;
+  readonly day?: string;
+  readonly refundOfId?: string;
+  readonly accountId?: string;
+  readonly categoryId?: string | null;
+  readonly note?: string;
+  readonly status?: TransactionStatus;
+}
+
+/** Edit a refund, re-checking its limit against the (possibly new) original. */
+export async function updateRefund(
+  driver: SqliteDriver,
+  input: UpdateRefundInput,
+  options: WriteOptions = {},
+): Promise<void> {
+  const row = await loadLiveRow(driver, input.id);
+  if (kindOf(row) !== 'refund') {
+    throw new LedgerError('not-a-refund', `Transaction "${input.id}" is not a refund.`);
+  }
+
+  const originalId = input.refundOfId ?? row.refund_of_id;
+  if (!originalId) {
+    throw new LedgerError('refund-link-required', 'A refund must point at the expense it reverses.');
+  }
+  const original = await requireExpenseForRefund(driver, originalId);
+
+  const accountId = await requireAccountId(
+    driver,
+    input.accountId ?? row.account_id,
+    input.id,
+  );
+  const account = await lookupAccount(driver, accountId);
+  const amountMinor = input.amountMinor ?? row.amount_minor;
+  const day = input.day ?? row.day;
+
+  const check = validatePosting({
+    kind: 'refund',
+    accountType: account.type,
+    amountMinor,
+    refundOfId: originalId,
+    day,
+  });
+  if (!check.ok) throw new LedgerError(check.code, check.message);
+
+  const alreadyRefunded = await refundedTotalFor(driver, originalId, {
+    excludeRefundId: input.id,
+  });
+  const remaining = Math.abs(original.amount_minor) - alreadyRefunded;
+  if (amountMinor > remaining) {
+    throw new LedgerError(
+      'refund-exceeds-expense',
+      `This refund is ${amountMinor} paise, but only ${Math.max(0, remaining)} paise remain unrefunded.`,
+    );
+  }
+
+  const categoryId =
+    input.categoryId !== undefined
+      ? input.categoryId
+      : input.refundOfId !== undefined
+        ? original.category_id
+        : row.category_id;
+
+  const now = (options.now ?? Date.now)();
+  await driver.runAsync(
+    `UPDATE fin_transactions
+        SET account_id = ?, amount_minor = ?, occurred_at = ?, day = ?, category_id = ?,
+            refund_of_id = ?, note = ?, status = ?, updated_at = ?
+      WHERE id = ?`,
+    [
+      accountId,
+      amountMinor,
+      occurredAtFor(day),
+      day,
+      categoryId,
+      originalId,
+      input.note ?? row.note ?? '',
+      input.status ?? row.status ?? 'posted',
+      now,
+      input.id,
+    ],
+  );
+}
+
+/** Soft-delete a refund. The original expense is untouched. */
+export async function deleteRefund(
+  driver: SqliteDriver,
+  id: string,
+  options: WriteOptions = {},
+): Promise<void> {
+  const row = await loadLiveRow(driver, id);
+  if (kindOf(row) !== 'refund') {
+    throw new LedgerError('not-a-refund', `Transaction "${id}" is not a refund.`);
+  }
+  const now = (options.now ?? Date.now)();
+  await driver.runAsync(
+    'UPDATE fin_transactions SET deleted_at = ?, updated_at = ? WHERE id = ?',
+    [now, now, id],
   );
 }

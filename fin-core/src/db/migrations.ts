@@ -31,6 +31,7 @@ import {
 import { getSetting, setSetting } from './settings';
 import { withTransaction } from './driver';
 import type { SqliteDriver } from './driver';
+import { migrateBudgets } from './budgets';
 
 export type SignMigrationStatus =
   | 'no-expenses'
@@ -55,6 +56,8 @@ export interface MigrationReport {
   readonly defaultCashAccountId: string | null;
   readonly backfilledTransactions: number;
   readonly sign: SignMigrationStatus;
+  /** Budget records created from the old goal budgets on the first run. */
+  readonly budgetsCreated: number;
   readonly warnings: readonly string[];
 }
 
@@ -312,23 +315,27 @@ export async function runFinancialMigrations(
 
   const accounts = await migrateAccounts(driver, options);
   const kinds = await migrateKinds(driver, options);
+  const budgets = await migrateBudgets(driver, options);
 
   await setSetting(driver, SETTING_KEYS.userVersionSeen, String(userVersion));
-  await setSetting(driver, SETTING_KEYS.schemaVersion, '2');
+  await setSetting(driver, SETTING_KEYS.schemaVersion, '3');
 
   return {
     userVersion,
     applied: [
       ...(accounts.applied ? [SETTING_KEYS.accountsMigrated] : []),
       ...(kinds.applied ? [SETTING_KEYS.kindsMigrated] : []),
+      ...(budgets.applied ? [SETTING_KEYS.budgetsMigrated] : []),
     ],
     skipped: [
       ...(!accounts.applied ? [SETTING_KEYS.accountsMigrated] : []),
       ...(!kinds.applied ? [SETTING_KEYS.kindsMigrated] : []),
+      ...(!budgets.applied ? [SETTING_KEYS.budgetsMigrated] : []),
     ],
     defaultCashAccountId: accounts.cashAccountId,
     backfilledTransactions: accounts.backfilled,
     sign: kinds.sign,
-    warnings: [...accounts.warnings, ...kinds.warnings],
+    budgetsCreated: budgets.created,
+    warnings: [...accounts.warnings, ...kinds.warnings, ...budgets.warnings],
   };
 }

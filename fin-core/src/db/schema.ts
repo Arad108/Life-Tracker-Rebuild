@@ -88,6 +88,38 @@ export const FIN_ACCOUNTS_DDL = `
   );
 `;
 
+/**
+ * I7 — budget records.
+ *
+ * The shipped app stored a budget as a mutable goal target, so editing a future
+ * budget rewrote history. A record is scoped to one period instead:
+ *
+ *   category_id  NULL = overall budget, otherwise fin_categories.id
+ *   period_kind  'month' (period_key = YYYY-MM) or 'custom' (start_day/end_day)
+ *
+ * `amount_minor` is positive paise. Records are never rewritten across periods;
+ * editing December leaves November untouched.
+ */
+export const FIN_BUDGETS_DDL = `
+  CREATE TABLE IF NOT EXISTS fin_budgets (
+    id TEXT PRIMARY KEY NOT NULL,
+    category_id TEXT REFERENCES fin_categories(id) ON DELETE CASCADE,
+    amount_minor INTEGER NOT NULL,
+    period_kind TEXT NOT NULL DEFAULT 'month',
+    period_key TEXT,
+    start_day TEXT,
+    end_day TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+`;
+
+/** Added by I7, after `fin_budgets` exists. */
+export const BUDGET_INDEXES = `
+  CREATE INDEX IF NOT EXISTS idx_fin_budgets_period ON fin_budgets (period_kind, period_key, category_id);
+  CREATE INDEX IF NOT EXISTS idx_fin_budgets_category ON fin_budgets (category_id, period_kind, period_key);
+`;
+
 /** Indexes that already existed in the app. */
 export const LEGACY_INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_fin_tx_day ON fin_transactions (day);
@@ -118,6 +150,7 @@ export const DEFAULT_CASH_ACCOUNT_ID = 'acc_cash_default';
 export const SETTING_KEYS = {
   accountsMigrated: 'fin_m0001_accounts',
   kindsMigrated: 'fin_m0002_kinds',
+  budgetsMigrated: 'fin_m0003_budgets',
   signMigrated: 'fin_sign_v1',
   signMixed: 'fin_sign_mixed',
   repairRequired: 'fin_repair_required',
