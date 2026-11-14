@@ -18,4 +18,6 @@ export * from './budgets';
 export * from './bills';
 export * from './snapshots';
 export * from './transactions';
+export * from './import';
+export * from './provenance';
 export * from './migrations';

@@ -17,4 +17,7 @@ export * from './available';
 export * from './networth';
 export * from './dates';
 export * from './analytics';
+export * from './slice';
+export * from './duplicates';
+export * from './import';
 export * from './db';

@@ -92,6 +92,12 @@ export interface Transaction {
   readonly currency?: string;
   readonly note?: string;
   readonly payee?: string | null;
+  /** Provenance: where this row came from. Defaults to `manual`. */
+  readonly source?: string;
+  readonly sourceRef?: string | null;
+  readonly importMethod?: string | null;
+  readonly importedAt?: number | null;
+  readonly confidence?: number | null;
 }
 
 /**

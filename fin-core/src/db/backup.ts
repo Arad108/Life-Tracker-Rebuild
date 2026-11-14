@@ -507,6 +507,7 @@ export async function restoreBackup(
       SETTING_KEYS.kindsMigrated,
       SETTING_KEYS.budgetsMigrated,
       SETTING_KEYS.billsMigrated,
+      SETTING_KEYS.provenanceMigrated,
       SETTING_KEYS.signMigrated,
       SETTING_KEYS.signMixed,
       SETTING_KEYS.repairRequired,

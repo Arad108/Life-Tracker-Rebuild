@@ -34,6 +34,10 @@ export interface FinTransactionRow {
   readonly status: string | null;
   readonly deleted_at: number | null;
   readonly bill_due_day: string | null;
+  readonly source_ref: string | null;
+  readonly import_method: string | null;
+  readonly imported_at: number | null;
+  readonly confidence: number | null;
 }
 
 export interface FinAccountRow {
@@ -86,6 +90,11 @@ export function toTransaction(row: FinTransactionRow): Transaction {
     refundOfId: row.refund_of_id,
     recurringId: row.recurring_id,
     billDueDay: row.bill_due_day,
+    source: row.source,
+    sourceRef: row.source_ref,
+    importMethod: row.import_method,
+    importedAt: row.imported_at,
+    confidence: row.confidence,
     deletedAt: row.deleted_at,
     currency: row.currency,
     note: row.note ?? '',

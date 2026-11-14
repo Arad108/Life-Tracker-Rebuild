@@ -33,6 +33,7 @@ import { withTransaction } from './driver';
 import type { SqliteDriver } from './driver';
 import { migrateBudgets } from './budgets';
 import { migrateBills } from './bills';
+import { migrateProvenance } from './provenance';
 
 export type SignMigrationStatus =
   | 'no-expenses'
@@ -61,6 +62,8 @@ export interface MigrationReport {
   readonly budgetsCreated: number;
   /** Recurring bills that were backfilled onto the default Cash account. */
   readonly billsBackfilled: number;
+  /** Provenance columns added to fin_transactions. */
+  readonly provenanceMigrated: boolean;
   readonly warnings: readonly string[];
 }
 
@@ -320,9 +323,10 @@ export async function runFinancialMigrations(
   const kinds = await migrateKinds(driver, options);
   const budgets = await migrateBudgets(driver, options);
   const bills = await migrateBills(driver, options);
+  const provenance = await migrateProvenance(driver, options);
 
   await setSetting(driver, SETTING_KEYS.userVersionSeen, String(userVersion));
-  await setSetting(driver, SETTING_KEYS.schemaVersion, '4');
+  await setSetting(driver, SETTING_KEYS.schemaVersion, '5');
 
   return {
     userVersion,
@@ -331,18 +335,21 @@ export async function runFinancialMigrations(
       ...(kinds.applied ? [SETTING_KEYS.kindsMigrated] : []),
       ...(budgets.applied ? [SETTING_KEYS.budgetsMigrated] : []),
       ...(bills.applied ? [SETTING_KEYS.billsMigrated] : []),
+      ...(provenance.applied ? [SETTING_KEYS.provenanceMigrated] : []),
     ],
     skipped: [
       ...(!accounts.applied ? [SETTING_KEYS.accountsMigrated] : []),
       ...(!kinds.applied ? [SETTING_KEYS.kindsMigrated] : []),
       ...(!budgets.applied ? [SETTING_KEYS.budgetsMigrated] : []),
       ...(!bills.applied ? [SETTING_KEYS.billsMigrated] : []),
+      ...(!provenance.applied ? [SETTING_KEYS.provenanceMigrated] : []),
     ],
     defaultCashAccountId: accounts.cashAccountId,
     backfilledTransactions: accounts.backfilled,
     sign: kinds.sign,
     budgetsCreated: budgets.created,
     billsBackfilled: bills.backfilled,
-    warnings: [...accounts.warnings, ...kinds.warnings, ...budgets.warnings, ...bills.warnings],
+    provenanceMigrated: provenance.applied,
+    warnings: [...accounts.warnings, ...kinds.warnings, ...budgets.warnings, ...bills.warnings, ...provenance.warnings],
   };
 }

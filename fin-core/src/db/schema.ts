@@ -166,6 +166,27 @@ export const FIN_SNAPSHOTS_DDL = `
   );
 `;
 
+/**
+ * I13 — provenance + duplicate candidates.
+ */
+export const FIN_DUPLICATE_CANDIDATES_DDL = `
+  CREATE TABLE IF NOT EXISTS fin_duplicate_candidates (
+    id TEXT PRIMARY KEY NOT NULL,
+    transaction_a_id TEXT NOT NULL REFERENCES fin_transactions(id) ON DELETE CASCADE,
+    transaction_b_id TEXT NOT NULL REFERENCES fin_transactions(id) ON DELETE CASCADE,
+    reason TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at INTEGER NOT NULL,
+    resolved_at INTEGER
+  );
+`;
+
+export const DUPLICATE_INDEXES = `
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_fin_dup_pair ON fin_duplicate_candidates (transaction_a_id, transaction_b_id);
+  CREATE INDEX IF NOT EXISTS idx_fin_dup_status ON fin_duplicate_candidates (status);
+`;
+
 /** Added by I8/I10, after the tables exist. */
 export const BILL_INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_fin_recurring_due ON fin_recurring (active, next_day);
@@ -206,6 +227,7 @@ export const SETTING_KEYS = {
   kindsMigrated: 'fin_m0002_kinds',
   budgetsMigrated: 'fin_m0003_budgets',
   billsMigrated: 'fin_m0004_bills',
+  provenanceMigrated: 'fin_m0005_provenance',
   signMigrated: 'fin_sign_v1',
   signMixed: 'fin_sign_mixed',
   repairRequired: 'fin_repair_required',
