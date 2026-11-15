@@ -22,6 +22,7 @@ import {
   updateTracker,
   deleteTracker,
   deleteEntry,
+  newId,
   getScheduleForTracker,
   getSetting,
   setSetting,
@@ -93,6 +94,10 @@ export default function TrackerDetail() {
   const [newSubject, setNewSubject] = useState('');
   const [timers, setTimers] = useState<Record<string, { start: number; running: boolean }>>({});
   const [now, setNow] = useState(Date.now());
+  const [sessionRunning, setSessionRunning] = useState(false);
+  const [sessionStart, setSessionStart] = useState(0);
+  const [goalOpen, setGoalOpen] = useState(false);
+  const [goalInput, setGoalInput] = useState('');
 
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
@@ -112,6 +117,14 @@ export default function TrackerDetail() {
     })();
   }, [tracker?.id, entries.length]);
 
+  useEffect(() => {
+    if (!tracker) return;
+    (async () => {
+      const v = await getSetting(`timer:${tracker.id}:session`);
+      if (v) { try { const st = JSON.parse(v); if (st.running) { setSessionRunning(true); setSessionStart(st.start); } } catch {} }
+    })();
+  }, [tracker?.id]);
+
   if (loading || !tracker) {
     return (
       <Screen>
@@ -126,6 +139,25 @@ export default function TrackerDetail() {
   const primaryKey = primary?.key ?? '';
   const today = dayKey();
   const todays = entries.filter((e: any) => e.day === today);
+  const sessionElapsed = sessionRunning ? Math.floor((now - sessionStart) / 1000) : 0;
+
+  const startSession = async () => {
+    const st = { start: Date.now(), running: true };
+    setSessionRunning(true);
+    setSessionStart(st.start);
+    await setSetting(`timer:${tracker.id}:session`, JSON.stringify(st));
+  };
+  const stopSession = async () => {
+    if (!sessionRunning) return;
+    const elapsedMin = Math.max(1, Math.round((Date.now() - sessionStart) / 60000));
+    const data: Record<string, unknown> = { ...liveDefaults, [primaryKey]: elapsedMin };
+    await saveEntry({ trackerId: tracker.id, data, occurredAt: Date.now(), fields });
+    setSessionRunning(false);
+    setSessionStart(0);
+    await removeSetting(`timer:${tracker.id}:session`);
+    toast.show(`Logged ${elapsedMin} min`);
+    await load();
+  };
   // streak: consecutive days with entries ending today
   let streak = 0;
   {
@@ -469,6 +501,67 @@ export default function TrackerDetail() {
             )}
           </Card>
         </>
+      ) : presentation === 'session' ? (
+        <>
+          <View style={{ alignItems: 'center', paddingVertical: space.lg }}>
+            <AppText size={48} weight="700" numeric>{sessionElapsed > 0 ? `${Math.floor(sessionElapsed/60)}:${String(sessionElapsed%60).padStart(2,'0')}` : `${todayTotal} min`}</AppText>
+            <AppText size={13} muted style={{ marginTop: space.xs }}>{sessionRunning ? 'Running…' : 'Today total'}</AppText>
+            <View style={{ flexDirection: 'row', gap: space.sm, marginTop: space.lg }}>
+              {sessionRunning ? (
+                <Button label="Stop" variant="primary" color={tracker.color} icon="stop" onPress={stopSession} style={{ minWidth: 120 }} />
+              ) : (
+                <Button label="Start" variant="primary" color={tracker.color} icon="play" onPress={startSession} style={{ minWidth: 120 }} />
+              )}
+            </View>
+          </View>
+          <Card style={{ gap: space.sm }}>
+            <AppText size={13} weight="700" muted>Today · {todays.length} sessions · {todayTotal} min</AppText>
+            {todays.length === 0 ? (
+              <AppText size={14} muted>No sessions yet.</AppText>
+            ) : (
+              todays.map((e: any) => (
+                <View key={e.id} style={styles.todayRow}>
+                  <AppText size={13} muted numeric style={{ width: 70 }}>{new Date(e.occurred_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}</AppText>
+                  <AppText size={15} style={{ flex: 1 }} numeric>{e.data?.[primaryKey]} min</AppText>
+                  <Pressable onPress={() => deleteEntry(e.id).then(load)} style={{ paddingHorizontal: space.sm }}>
+                    <AppText size={13} muted>Remove</AppText>
+                  </Pressable>
+                </View>
+              ))
+            )}
+          </Card>
+        </>
+      ) : presentation === 'count' ? (
+        <>
+          <View style={{ alignItems: 'center', paddingVertical: space.lg }}>
+            <AppText size={64} weight="700" numeric>{todayTotal}</AppText>
+            <AppText size={13} muted style={{ marginTop: space.xs }}>today</AppText>
+            <Pressable onPress={async () => {
+              const data: Record<string, unknown> = { ...liveDefaults, [primaryKey]: (todays.length > 0 ? (todays[todays.length-1].data?.[primaryKey] ?? 0) + 1 : 1) };
+              await saveEntry({ trackerId: tracker.id, data, occurredAt: Date.now(), fields });
+              toast.show('+1');
+              await load();
+            }} style={{ width: 120, height: 120, borderRadius: 60, backgroundColor: tracker.color, alignItems: 'center', justifyContent: 'center', marginTop: space.lg }}>
+              <Ionicons name="add" size={48} color="#fff" />
+            </Pressable>
+          </View>
+          <Card style={{ gap: space.sm }}>
+            <AppText size={13} weight="700" muted>History</AppText>
+            {entries.length === 0 ? (
+              <AppText size={14} muted>No entries yet.</AppText>
+            ) : (
+              entries.slice(0, 20).map((e: any) => (
+                <View key={e.id} style={styles.todayRow}>
+                  <AppText size={12} muted style={{ width: 90 }}>{new Date(e.occurred_at).toLocaleDateString()}</AppText>
+                  <AppText size={15} style={{ flex: 1 }} numeric>{e.data?.[primaryKey]}</AppText>
+                  <Pressable onPress={() => deleteEntry(e.id).then(load)} style={{ paddingHorizontal: space.sm }}>
+                    <AppText size={13} muted>Remove</AppText>
+                  </Pressable>
+                </View>
+              ))
+            )}
+          </Card>
+        </>
       ) : presentation === 'quantity' ? (
         <>
           <View style={{ alignItems: 'center', paddingVertical: space.lg }}>
@@ -533,10 +626,10 @@ export default function TrackerDetail() {
                 <AppText size={14} weight="600">{(goal as any).title || `${tracker.name}: at least ${goal.target} ${goal.unit} per ${goal.period}`}</AppText>
                 <AppText size={13} muted>{todayTotal} of {goalTarget} {unit} today</AppText>
                 <ProgressBar value={goalProgress} color={tracker.color} />
-                <Pressable onPress={() => toast.show('Add another goal')}><AppText size={13} weight="700" color={tracker.color}>Add another goal</AppText></Pressable>
+                <Pressable onPress={() => { setGoalInput(String(goalTarget || '')); setGoalOpen(true); }}><AppText size={13} weight="700" color={tracker.color}>Add another goal</AppText></Pressable>
               </>
             ) : (
-              <Pressable onPress={() => toast.show('Set a goal (optional)')}><AppText size={13} weight="700" color={tracker.color}>Set a goal (optional)</AppText></Pressable>
+              <Pressable onPress={() => { setGoalInput(String(goalTarget || '')); setGoalOpen(true); }}><AppText size={13} weight="700" color={tracker.color}>Set a goal (optional)</AppText></Pressable>
             )}
           </Card>
         </>
@@ -568,6 +661,39 @@ export default function TrackerDetail() {
         <Button label="Delete permanently" variant="ghost" icon="trash-outline" color={t.danger} onPress={onDelete} />
       </View>
 
+      <Modal visible={goalOpen} transparent animationType="fade" onRequestClose={() => setGoalOpen(false)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setGoalOpen(false)}>
+          <Pressable style={[styles.modalCard, { backgroundColor: t.surface }]} onPress={() => {}}>
+            <AppText size={17} weight="700">Set a daily goal</AppText>
+            <TextInput
+              value={goalInput}
+              onChangeText={setGoalInput}
+              keyboardType="numeric"
+              placeholder={`Target in ${unit}`}
+              placeholderTextColor={t.textMuted}
+              style={[styles.input, { borderColor: t.border, color: t.text, backgroundColor: t.surfaceAlt }]}
+              autoFocus
+            />
+            <View style={{ flexDirection: 'row', gap: space.sm }}>
+              <Button label="Cancel" variant="secondary" onPress={() => setGoalOpen(false)} style={{ flex: 1 }} />
+              <Button label="Save" onPress={async () => {
+                const n = Number(goalInput);
+                if (!Number.isFinite(n) || n <= 0) { toast.show('Enter a positive number'); return; }
+                const d = makeDriver();
+                await d.runAsync('DELETE FROM goals WHERE space_key = ?', [`tracker:${tracker.id}`]);
+                await d.runAsync(
+                  `INSERT INTO goals (id, title, space_key, kind, metric, target, unit, period, status, created_at, updated_at) VALUES (?, ?, ?, 'target', 'sum', ?, ?, 'day', 'active', ?, ?)`,
+                  [newId('goal'), `${tracker.name}: at least ${n} ${unit} per day`, `tracker:${tracker.id}`, n, unit, Date.now(), Date.now()],
+                );
+                await updateTracker(tracker.id, { config: { ...tracker.config, goal: { metric: 'sum', target: n, unit, period: 'day' } } });
+                setGoalOpen(false);
+                toast.show('Goal saved');
+                await load();
+              }} style={{ flex: 1 }} />
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
       <Modal visible={customOpen} transparent animationType="fade" onRequestClose={() => setCustomOpen(false)}>
         <Pressable style={styles.modalBackdrop} onPress={() => setCustomOpen(false)}>
           <Pressable style={[styles.modalCard, { backgroundColor: t.surface }]} onPress={() => {}}>
