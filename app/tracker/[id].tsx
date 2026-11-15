@@ -393,6 +393,82 @@ export default function TrackerDetail() {
             )}
           </Card>
         </>
+      ) : presentation === 'log' ? (
+        <>
+          <Button label={`+ Log ${tracker.name}`} icon="add" color={tracker.color} onPress={() => setCustomOpen(true)} />
+          <Card style={{ gap: space.sm }}>
+            <AppText size={13} weight="700" muted>Today · {todays.length} entries</AppText>
+            {todays.length === 0 ? (
+              <AppText size={14} muted>Nothing logged today.</AppText>
+            ) : (
+              todays.map((e: any) => (
+                <View key={e.id} style={styles.todayRow}>
+                  <AppText size={13} muted numeric style={{ width: 70 }}>{new Date(e.occurred_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}</AppText>
+                  <View style={{ flex: 1 }}>
+                    <AppText size={15} weight="600">{String(e.data?.[fields.find(f=>f.type==='select')?.key ?? 'meal'] ?? '')}</AppText>
+                    <AppText size={13} muted numberOfLines={1}>{String(e.data?.[primaryKey] ?? e.data?.[fields.find(f=>f.type==='text')?.key ?? 'what'] ?? '')}</AppText>
+                  </View>
+                  <Pressable onPress={() => deleteEntry(e.id).then(load)} accessibilityLabel="Remove" style={{ paddingHorizontal: space.sm }}>
+                    <AppText size={13} muted>Remove</AppText>
+                  </Pressable>
+                </View>
+              ))
+            )}
+          </Card>
+          <Card style={{ gap: space.sm }}>
+            <AppText size={13} weight="700" muted>History</AppText>
+            {entries.length === 0 ? (
+              <AppText size={14} muted>No entries yet.</AppText>
+            ) : (
+              entries.slice(0, 20).map((e: any) => (
+                <View key={e.id} style={styles.todayRow}>
+                  <AppText size={12} muted style={{ width: 90 }}>{new Date(e.occurred_at).toLocaleDateString()}</AppText>
+                  <AppText size={14} style={{ flex: 1 }} numberOfLines={1}>{String(e.data?.[fields.find(f=>f.type==='text')?.key ?? 'what'] ?? '')}</AppText>
+                </View>
+              ))
+            )}
+          </Card>
+        </>
+      ) : presentation === 'rating' ? (
+        <>
+          <Card style={{ gap: space.md, alignItems: 'center' }}>
+            <AppText size={13} weight="700" muted>Today's rating</AppText>
+            <View style={{ flexDirection: 'row', gap: space.sm }}>
+              {[1,2,3,4,5].map((star) => {
+                const current = todays.length > 0 ? Number(todays[0].data?.[primaryKey]) : 0;
+                return (
+                  <Pressable key={star} onPress={async () => {
+                    const data: Record<string, unknown> = { ...liveDefaults, [primaryKey]: star };
+                    if (todays.length > 0) await deleteEntry(todays[0].id);
+                    await saveEntry({ trackerId: tracker.id, data, occurredAt: Date.now(), fields });
+                    toast.show(`Rated ${star}`);
+                    await load();
+                  }}>
+                    <Ionicons name={star <= current ? 'star' : 'star-outline'} size={36} color="#F59E0B" />
+                  </Pressable>
+                );
+              })}
+            </View>
+            {todays.length > 0 ? <AppText size={13} muted>Rated {todays[0].data?.[primaryKey]} today</AppText> : <AppText size={13} muted>Tap a star</AppText>}
+          </Card>
+          <Card style={{ gap: space.sm }}>
+            <AppText size={13} weight="700" muted>History</AppText>
+            {entries.length === 0 ? (
+              <AppText size={14} muted>No ratings yet.</AppText>
+            ) : (
+              entries.slice(0, 20).map((e: any) => (
+                <View key={e.id} style={styles.todayRow}>
+                  <AppText size={12} muted style={{ width: 90 }}>{new Date(e.occurred_at).toLocaleDateString()}</AppText>
+                  <View style={{ flex: 1, flexDirection: 'row', gap: 2 }}>
+                    {[1,2,3,4,5].map((star) => (
+                      <Ionicons key={star} name={star <= Number(e.data?.[primaryKey]) ? 'star' : 'star-outline'} size={14} color="#F59E0B" />
+                    ))}
+                  </View>
+                </View>
+              ))
+            )}
+          </Card>
+        </>
       ) : presentation === 'quantity' ? (
         <>
           <View style={{ alignItems: 'center', paddingVertical: space.lg }}>
