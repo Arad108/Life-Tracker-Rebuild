@@ -21,13 +21,14 @@ import {
   saveEntry,
   updateTracker,
   deleteTracker,
+  deleteEntry,
   getScheduleForTracker,
   getSetting,
   setSetting,
   removeSetting,
 } from '../../src/tracker/repository';
 import { makeDriver } from '../../src/db';
-import { dayKey, daysBack } from '../../src/tracker/dates';
+import { dayKey, daysBack, addDays } from '../../src/tracker/dates';
 import { detectPresentation, primaryField } from '../../src/tracker/presentation';
 import { PRESENTATIONS, type Tracker, type TrackerField } from '../../src/tracker/types';
 
@@ -98,6 +99,19 @@ export default function TrackerDetail() {
     return () => clearInterval(id);
   }, []);
 
+  useEffect(() => {
+    if (!tracker) return;
+    const subs = Array.from(new Set(entries.map((e: any) => String(e.data?.[(tracker.config.titleFieldKey ?? 'subject')] ?? '')).filter(Boolean)));
+    (async () => {
+      const out: Record<string, { start: number; running: boolean }> = {};
+      for (const s of subs) {
+        const v = await getSetting(`timer:${tracker.id}:${s}`);
+        if (v) { try { out[s] = JSON.parse(v); } catch {} }
+      }
+      setTimers(out);
+    })();
+  }, [tracker?.id, entries.length]);
+
   if (loading || !tracker) {
     return (
       <Screen>
@@ -112,6 +126,15 @@ export default function TrackerDetail() {
   const primaryKey = primary?.key ?? '';
   const today = dayKey();
   const todays = entries.filter((e: any) => e.day === today);
+  // streak: consecutive days with entries ending today
+  let streak = 0;
+  {
+    let d = today;
+    while (entries.some((e: any) => e.day === d)) {
+      streak += 1;
+      d = addDays(d, -1);
+    }
+  }
   const todayTotal = todays.reduce((s: number, e: any) => {
     const v = e.data?.[primaryKey];
     const n = typeof v === 'number' ? v : Number(v);
@@ -142,18 +165,6 @@ export default function TrackerDetail() {
   const durationKey = durationFld?.key ?? 'duration';
 
   const subjects = Array.from(new Set(entries.map((e: any) => String(e.data?.[subjectKey] ?? '')).filter(Boolean)));
-
-  useEffect(() => {
-    // load timer states
-    (async () => {
-      const out: Record<string, { start: number; running: boolean }> = {};
-      for (const s of subjects) {
-        const v = await getSetting(`timer:${tracker.id}:${s}`);
-        if (v) { try { out[s] = JSON.parse(v); } catch {} }
-      }
-      setTimers(out);
-    })();
-  }, [tracker.id, subjects.join('|')]);
 
   const totalFor = (subject: string) => entries
     .filter((e: any) => String(e.data?.[subjectKey]) === subject)
@@ -256,7 +267,73 @@ export default function TrackerDetail() {
         }
       />
 
-      {presentation === 'subjects' ? (
+      {presentation === 'check' ? (
+        <>
+          <View style={{ alignItems: 'center', paddingVertical: space.lg }}>
+            <Pressable
+              onPress={async () => {
+                if (todays.length > 0) {
+                  await deleteEntry(todays[0].id);
+                  toast.show('Undone');
+                } else {
+                  const data: Record<string, unknown> = { ...liveDefaults, [primaryKey]: true };
+                  await saveEntry({ trackerId: tracker.id, data, occurredAt: Date.now(), fields });
+                  toast.show('Done');
+                }
+                await load();
+              }}
+              style={{
+                width: 160, height: 160, borderRadius: 80,
+                alignItems: 'center', justifyContent: 'center',
+                backgroundColor: todays.length > 0 ? tracker.color : t.surfaceAlt,
+                borderWidth: 3, borderColor: tracker.color,
+              }}
+            >
+              <Ionicons name={todays.length > 0 ? 'checkmark' : 'ellipse-outline'} size={64} color={todays.length > 0 ? '#fff' : tracker.color} />
+              <AppText size={14} weight="700" color={todays.length > 0 ? '#fff' : t.text} style={{ marginTop: 4 }}>
+                {todays.length > 0 ? 'Done' : 'Tap to complete'}
+              </AppText>
+            </Pressable>
+            <AppText size={13} muted style={{ marginTop: space.md }}>
+              {todays.length > 0 ? 'Completed today' : 'Not completed today'}
+            </AppText>
+            <AppText size={13} weight="600" color={tracker.color} style={{ marginTop: space.xs }}>
+              {streak} day streak
+            </AppText>
+          </View>
+
+          <Card style={{ gap: space.sm }}>
+            <AppText size={13} weight="700" muted>This week</AppText>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+              {weekValues.map((w) => {
+                const done = entries.some((e: any) => e.day === w.day);
+                return (
+                  <View key={w.day} style={{ alignItems: 'center', gap: 4 }}>
+                    <View style={{ width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center', backgroundColor: done ? tracker.color : t.surfaceAlt }}>
+                      {done ? <Ionicons name="checkmark" size={18} color="#fff" /> : null}
+                    </View>
+                    <AppText size={10} muted>{['S','M','T','W','T','F','S'][new Date(w.day).getDay()]}</AppText>
+                  </View>
+                );
+              })}
+            </View>
+          </Card>
+
+          <Card style={{ gap: space.sm }}>
+            <AppText size={13} weight="700" muted>History</AppText>
+            {entries.length === 0 ? (
+              <AppText size={14} muted>No completions yet.</AppText>
+            ) : (
+              entries.slice(0, 20).map((e: any) => (
+                <View key={e.id} style={styles.todayRow}>
+                  <AppText size={13} muted style={{ width: 120 }}>{new Date(e.occurred_at).toLocaleDateString()}</AppText>
+                  <AppText size={15} style={{ flex: 1 }}>Completed</AppText>
+                </View>
+              ))
+            )}
+          </Card>
+        </>
+      ) : presentation === 'subjects' ? (
         <>
           {subjects.length === 0 && Object.keys(timers).length === 0 ? (
             <Card><AppText muted>No subjects yet. Add one below.</AppText></Card>
