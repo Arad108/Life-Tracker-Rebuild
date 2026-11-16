@@ -153,6 +153,7 @@ export default function TrackerDetail() {
   const [savedSubjects, setSavedSubjects] = useState<string[]>([]);
   const [timers, setTimers] = useState<Record<string, { start: number; running: boolean }>>({});
   const [now, setNow] = useState(Date.now());
+  const [finishedSession, setFinishedSession] = useState<{ subject: string; minutes: number; note: string; rating: number } | null>(null);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -1088,9 +1089,28 @@ export default function TrackerDetail() {
     const state = timers[subject];
     if (!state?.running) return;
     const elapsedMin = Math.max(1, Math.round((Date.now() - state.start) / 60000));
-    await addEntry({ ...defaults, [subjectKey]: subject, [durationKey]: elapsedMin });
     setTimers((prev) => ({ ...prev, [subject]: { start: 0, running: false } }));
     await removeSetting(`timer:${tracker.id}:${subject}`);
+    setFinishedSession({ subject, minutes: elapsedMin, note: '', rating: 0 });
+  };
+
+  const saveFinished = async () => {
+    if (!finishedSession) return;
+    await addEntry({
+      ...defaults,
+      [subjectKey]: finishedSession.subject,
+      [durationKey]: finishedSession.minutes,
+    });
+    setFinishedSession(null);
+    await load();
+  };
+
+  const discardFinished = () => {
+    setFinishedSession(null);
+  };
+
+  const adjustFinished = (delta: number) => {
+    setFinishedSession((prev) => (prev ? { ...prev, minutes: Math.max(1, prev.minutes + delta) } : prev));
   };
 
   const addSubject = async () => {
@@ -1113,9 +1133,96 @@ export default function TrackerDetail() {
         return sum + (Number.isFinite(n) ? n : 0);
       }, 0);
 
+    const runningSubject = Object.keys(timers).find((subj) => timers[subj]?.running);
+
     return (
       <View style={{ gap: space.xl }}>
-        {subjects.length === 0 && Object.keys(timers).length === 0 ? (
+        {runningSubject ? (
+          <View
+            style={{
+              backgroundColor: tracker.color,
+              borderRadius: radius.lg,
+              padding: space.lg,
+              gap: space.sm,
+            }}
+          >
+            <AppText size={13} weight="500" color="#fff" style={{ opacity: 0.85 }}>
+              In progress
+            </AppText>
+            <AppText size={17} weight="600" color="#fff">
+              {runningSubject}
+            </AppText>
+            <AppText size={48} weight="700" numeric color="#fff">
+              {`${Math.floor((now - timers[runningSubject].start) / 60000)}:${String(Math.floor(((now - timers[runningSubject].start) / 1000) % 60)).padStart(2, '0')}`}
+            </AppText>
+            <Pressable
+              onPress={() => stopTimer(runningSubject)}
+              style={{
+                alignSelf: 'flex-start',
+                paddingHorizontal: space.lg,
+                paddingVertical: space.sm,
+                borderRadius: radius.pill,
+                backgroundColor: '#fff',
+              }}
+            >
+              <AppText size={15} weight="600" color={tracker.color}>
+                Stop
+              </AppText>
+            </Pressable>
+            <AppText size={12} color="#fff" style={{ opacity: 0.8 }}>
+              It keeps running if you close the app.
+            </AppText>
+          </View>
+        ) : null}
+
+        {finishedSession ? (
+          <View
+            style={{
+              backgroundColor: t.surfaceAlt,
+              borderRadius: radius.lg,
+              padding: space.lg,
+              gap: space.sm,
+            }}
+          >
+            <AppText size={13} weight="500" muted>
+              Session finished
+            </AppText>
+            <AppText size={17} weight="600">
+              {finishedSession.subject}
+            </AppText>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
+              <Pressable onPress={() => adjustFinished(-5)} style={{ padding: space.sm }}>
+                <AppText size={15} weight="600">
+                  5 minutes less
+                </AppText>
+              </Pressable>
+              <AppText size={24} weight="700" numeric>
+                {formatDuration(finishedSession.minutes)}
+              </AppText>
+              <Pressable onPress={() => adjustFinished(5)} style={{ padding: space.sm }}>
+                <AppText size={15} weight="600">
+                  5 minutes more
+                </AppText>
+              </Pressable>
+            </View>
+            <TextInput
+              value={finishedSession.note}
+              onChangeText={(v) => setFinishedSession((prev) => (prev ? { ...prev, note: v } : prev))}
+              placeholder="What I learned (optional)"
+              placeholderTextColor={t.textMuted}
+              style={[styles.input, { borderColor: t.border, color: t.text, backgroundColor: t.surface }]}
+            />
+            <View style={{ flexDirection: 'row', gap: space.sm }}>
+              <Button label="Discard" variant="secondary" onPress={discardFinished} style={{ flex: 1 }} />
+              <Button label="Save session" onPress={saveFinished} style={{ flex: 1 }} />
+            </View>
+            <AppText size={12} muted>
+              The time is not saved until you press Save.
+            </AppText>
+          </View>
+        ) : null}
+
+        {subjects.length === 0 && Object.keys(timers).length === 0 && !finishedSession ? (
           <AppText size={15} muted>
             Nothing yet.
           </AppText>
@@ -1123,32 +1230,21 @@ export default function TrackerDetail() {
         {[...new Set([...subjects, ...Object.keys(timers)])].map((subject) => {
           const state = timers[subject];
           const running = !!state?.running;
-          const elapsed = running ? Math.floor((now - state.start) / 1000) : 0;
           const total = totalFor(subject);
+          if (running) return null;
           return (
-            <View key={subject} style={{ gap: space.sm }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
-                <View style={{ flex: 1 }}>
-                  <AppText size={17} weight="600">{subject}</AppText>
-                  <AppText size={13} muted>{`${formatDuration(total)} studied`}</AppText>
-                </View>
-                {running ? (
-                  <View style={{ alignItems: 'center', gap: space.xs }}>
-                    <AppText size={17} weight="600" numeric color={tracker.color}>
-                      {`${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`}
-                    </AppText>
-                    <Button label="Stop" color={tracker.color} onPress={() => stopTimer(subject)} style={{ minHeight: 40 }} />
-                  </View>
-                ) : (
-                  <Button
-                    label="Start"
-                    icon="play"
-                    color={tracker.color}
-                    onPress={() => startTimer(subject)}
-                    style={{ minHeight: 40 }}
-                  />
-                )}
+            <View key={subject} style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
+              <View style={{ flex: 1 }}>
+                <AppText size={17} weight="600">{subject}</AppText>
+                <AppText size={13} muted>{`${formatDuration(total)} studied`}</AppText>
               </View>
+              <Button
+                label="Start"
+                icon="play"
+                color={tracker.color}
+                onPress={() => startTimer(subject)}
+                style={{ minHeight: 40 }}
+              />
             </View>
           );
         })}
