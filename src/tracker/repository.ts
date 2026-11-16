@@ -489,3 +489,54 @@ export async function listEnabledTrackerSchedules(): Promise<TrackerSchedule[]> 
   );
   return rows.map(mapSchedule);
 }
+
+
+export interface GoalMilestone {
+  id: string;
+  goal_id: string;
+  title: string;
+  due_day: string | null;
+  position: number;
+  done_at: number | null;
+}
+
+export async function listMilestones(goalId: string): Promise<GoalMilestone[]> {
+  const d = makeDriver();
+  const rows = await d.getAllAsync<Record<string, unknown>>(
+    'SELECT * FROM goal_milestones WHERE goal_id = ? ORDER BY position, rowid',
+    [goalId],
+  );
+  return rows.map((r) => ({
+    id: String(r.id),
+    goal_id: String(r.goal_id),
+    title: String(r.title),
+    due_day: r.due_day ? String(r.due_day) : null,
+    position: Number(r.position) || 0,
+    done_at: r.done_at ? Number(r.done_at) : null,
+  }));
+}
+
+export async function addMilestone(goalId: string, title: string, dueDay?: string | null): Promise<string> {
+  const d = makeDriver();
+  const maxRow = await d.getFirstAsync<{ m: number | null }>(
+    'SELECT MAX(position) AS m FROM goal_milestones WHERE goal_id = ?',
+    [goalId],
+  );
+  const pos = (maxRow?.m ?? 0) + 1;
+  const id = newId('ms');
+  await d.runAsync(
+    'INSERT INTO goal_milestones (id, goal_id, title, due_day, position) VALUES (?, ?, ?, ?, ?)',
+    [id, goalId, title, dueDay ?? null, pos],
+  );
+  return id;
+}
+
+export async function toggleMilestone(id: string, done: boolean): Promise<void> {
+  const d = makeDriver();
+  await d.runAsync('UPDATE goal_milestones SET done_at = ? WHERE id = ?', [done ? Date.now() : null, id]);
+}
+
+export async function deleteMilestone(id: string): Promise<void> {
+  const d = makeDriver();
+  await d.runAsync('DELETE FROM goal_milestones WHERE id = ?', [id]);
+}
