@@ -3,6 +3,7 @@ import {
   Alert,
   Modal,
   Pressable,
+  ScrollView,
   StyleSheet,
   TextInput,
   View,
@@ -133,6 +134,13 @@ export default function TrackerDetail() {
   const [goalOpen, setGoalOpen] = useState(false);
   const [goalInput, setGoalInput] = useState('');
   const [goalMetric, setGoalMetric] = useState('count');
+  const [goalKind, setGoalKind] = useState<'rate' | 'limit' | 'total' | 'manual'>('rate');
+  const [goalUnit, setGoalUnit] = useState('');
+  const [goalPeriod, setGoalPeriod] = useState<'day' | 'week' | 'month' | 'none'>('day');
+  const [goalDeadline, setGoalDeadline] = useState<string | null>(null);
+  const [goalPriority, setGoalPriority] = useState(0);
+  const [goalNotes, setGoalNotes] = useState('');
+  const [goalName, setGoalName] = useState('');
 
   const [newSubject, setNewSubject] = useState('');
   const [savedSubjects, setSavedSubjects] = useState<string[]>([]);
@@ -310,26 +318,40 @@ export default function TrackerDetail() {
   const openGoalSheet = (metric?: string) => {
     setGoalMetric(metric ?? (primaryKey ? `sum:${primaryKey}` : 'count'));
     setGoalInput('');
+    setGoalKind('rate');
+    setGoalUnit(unit);
+    setGoalPeriod('day');
+    setGoalDeadline(null);
+    setGoalPriority(0);
+    setGoalNotes('');
+    setGoalName('');
     setGoalOpen(true);
   };
 
   const saveGoal = async () => {
     const n = Number(goalInput);
-    if (!Number.isFinite(n) || n <= 0) {
+    const isManual = goalKind === 'manual';
+    if (!isManual && (!Number.isFinite(n) || n <= 0)) {
       toast.show('Enter a positive number');
       return;
     }
     const d = makeDriver();
     await d.runAsync('DELETE FROM goals WHERE space_key = ?', [`tracker:${tracker.id}`]);
     await d.runAsync(
-      `INSERT INTO goals (id, title, space_key, kind, metric, target, unit, period, status, created_at, updated_at) VALUES (?, ?, ?, 'rate', ?, ?, ?, 'day', 'active', ?, ?)`,
+      `INSERT INTO goals (id, title, space_key, kind, metric, target, unit, period, start_day, deadline, priority, status, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
       [
         newId('goal'),
-        `${tracker.name}: at least ${n} ${unit} per day`.trim(),
+        goalName.trim() || `${tracker.name}: ${isManual ? 'milestone' : `${goalKind} ${n} ${goalUnit || unit}`.trim()}`,
         `tracker:${tracker.id}`,
-        goalMetric,
-        n,
-        unit,
+        goalKind,
+        isManual ? 'count' : goalMetric,
+        isManual ? 0 : n,
+        isManual ? null : (goalUnit || unit || null),
+        goalPeriod,
+        dayKey(),
+        goalDeadline,
+        goalPriority,
+        goalNotes.trim(),
         Date.now(),
         Date.now(),
       ],
@@ -1237,23 +1259,147 @@ export default function TrackerDetail() {
 
       <Modal visible={goalOpen} transparent animationType="fade" onRequestClose={() => setGoalOpen(false)}>
         <Pressable style={styles.modalBackdrop} onPress={() => setGoalOpen(false)}>
-          <Pressable style={[styles.modalCard, { backgroundColor: t.surface }]} onPress={() => {}}>
-            <AppText size={17} weight="700">
-              Set a daily goal
-            </AppText>
-            <TextInput
-              value={goalInput}
-              onChangeText={setGoalInput}
-              keyboardType="numeric"
-              placeholder={`Target in ${unit}`}
-              placeholderTextColor={t.textMuted}
-              style={[styles.input, { borderColor: t.border, color: t.text, backgroundColor: t.surfaceAlt }]}
-              autoFocus
-            />
-            <View style={{ flexDirection: 'row', gap: space.sm }}>
-              <Button label="Cancel" variant="secondary" onPress={() => setGoalOpen(false)} style={{ flex: 1 }} />
-              <Button label="Save" onPress={saveGoal} style={{ flex: 1 }} />
-            </View>
+          <Pressable style={[styles.modalCard, { backgroundColor: t.surface, maxHeight: '92%' }]} onPress={() => {}}>
+            <ScrollView style={{ maxHeight: 750 }}>
+              <View style={{ gap: space.md }}>
+                <AppText size={17} weight="700">
+                  New goal
+                </AppText>
+
+                <View style={{ gap: space.xs }}>
+                  <SectionLabel>Where does it belong?</SectionLabel>
+                  <ChipRow>
+                    <Chip label="This tracker" selected onPress={() => {}} />
+                    <Chip label="Just life" selected={false} onPress={() => {}} />
+                  </ChipRow>
+                </View>
+
+                <View style={{ gap: space.xs }}>
+                  <SectionLabel>What kind of goal?</SectionLabel>
+                  <ChipRow>
+                    {(['rate', 'limit', 'total', 'manual'] as const).map((k) => (
+                      <Chip
+                        key={k}
+                        label={k === 'rate' ? 'Reach at least' : k === 'limit' ? 'Stay under' : k === 'total' ? 'Build up to a total' : "I'll update it myself"}
+                        selected={goalKind === k}
+                        onPress={() => setGoalKind(k)}
+                      />
+                    ))}
+                  </ChipRow>
+                </View>
+
+                {goalKind !== 'manual' ? (
+                  <View style={{ gap: space.xs }}>
+                    <SectionLabel>What should it measure?</SectionLabel>
+                    <ChipRow>
+                      <Chip
+                        label={primaryKey ? `${primary?.label ?? primaryKey}: ${goalMetric}` : 'Count'}
+                        selected={goalMetric !== null}
+                        onPress={() => setGoalMetric(primaryKey ? `sum:${primaryKey}` : 'count')}
+                      />
+                      <Chip
+                        label="I'll update it myself"
+                        selected={goalMetric === null}
+                        onPress={() => setGoalMetric(null as unknown as string)}
+                      />
+                    </ChipRow>
+                  </View>
+                ) : null}
+
+                {goalKind !== 'manual' ? (
+                  <View style={{ gap: space.xs }}>
+                    <SectionLabel>Target</SectionLabel>
+                    <TextInput
+                      value={goalInput}
+                      onChangeText={setGoalInput}
+                      keyboardType="decimal-pad"
+                      placeholder="e.g. 3000"
+                      placeholderTextColor={t.textMuted}
+                      style={[styles.input, { borderColor: t.border, color: t.text, backgroundColor: t.surfaceAlt }]}
+                    />
+                    <TextInput
+                      value={goalUnit}
+                      onChangeText={setGoalUnit}
+                      placeholder={`Unit (optional), e.g. ${unit}`}
+                      placeholderTextColor={t.textMuted}
+                      style={[styles.input, { borderColor: t.border, color: t.text, backgroundColor: t.surfaceAlt }]}
+                    />
+                  </View>
+                ) : null}
+
+                <View style={{ gap: space.xs }}>
+                  <SectionLabel>How often?</SectionLabel>
+                  <ChipRow>
+                    {(['day', 'week', 'month', 'none'] as const).map((p) => (
+                      <Chip
+                        key={p}
+                        label={p === 'day' ? 'Per day' : p === 'week' ? 'Per week' : p === 'month' ? 'Per month' : 'Overall'}
+                        selected={goalPeriod === p}
+                        onPress={() => setGoalPeriod(p)}
+                      />
+                    ))}
+                  </ChipRow>
+                </View>
+
+                <View style={{ gap: space.xs }}>
+                  <SectionLabel>Deadline (optional)</SectionLabel>
+                  <View style={{ flexDirection: 'row', gap: space.sm, alignItems: 'center' }}>
+                    <TextInput
+                      value={goalDeadline ?? ''}
+                      onChangeText={(v) => setGoalDeadline(v || null)}
+                      placeholder="YYYY-MM-DD or empty"
+                      placeholderTextColor={t.textMuted}
+                      style={[styles.input, { borderColor: t.border, color: t.text, backgroundColor: t.surfaceAlt, flex: 1 }]}
+                    />
+                    {goalDeadline ? (
+                      <Button label="Clear" variant="ghost" onPress={() => setGoalDeadline(null)} />
+                    ) : null}
+                  </View>
+                </View>
+
+                <View style={{ gap: space.xs }}>
+                  <SectionLabel>Priority</SectionLabel>
+                  <ChipRow>
+                    {[0, 1, 2, 3, 4, 5].map((p) => (
+                      <Chip
+                        key={p}
+                        label={String(p)}
+                        selected={goalPriority === p}
+                        onPress={() => setGoalPriority(p)}
+                      />
+                    ))}
+                  </ChipRow>
+                </View>
+
+                <View style={{ gap: space.xs }}>
+                  <SectionLabel>Name (optional)</SectionLabel>
+                  <TextInput
+                    value={goalName}
+                    onChangeText={setGoalName}
+                    placeholder="e.g. Drink 3 L of water"
+                    placeholderTextColor={t.textMuted}
+                    style={[styles.input, { borderColor: t.border, color: t.text, backgroundColor: t.surfaceAlt }]}
+                  />
+                </View>
+
+                <View style={{ gap: space.xs }}>
+                  <SectionLabel>Notes (optional)</SectionLabel>
+                  <TextInput
+                    value={goalNotes}
+                    onChangeText={setGoalNotes}
+                    placeholder="Notes"
+                    placeholderTextColor={t.textMuted}
+                    multiline
+                    style={[styles.input, { borderColor: t.border, color: t.text, backgroundColor: t.surfaceAlt, minHeight: 80 }]}
+                  />
+                </View>
+
+                <View style={{ flexDirection: 'row', gap: space.sm }}>
+                  <Button label="Cancel" variant="secondary" onPress={() => setGoalOpen(false)} style={{ flex: 1 }} />
+                  <Button label="Save goal" onPress={saveGoal} style={{ flex: 1 }} />
+                </View>
+              </View>
+            </ScrollView>
           </Pressable>
         </Pressable>
       </Modal>
