@@ -32,6 +32,10 @@ import {
   restoreEntry,
   newId,
   getScheduleForTracker,
+  listMilestones,
+  addMilestone,
+  toggleMilestone,
+  deleteMilestone,
   getSetting,
   setSetting,
   removeSetting,
@@ -141,6 +145,9 @@ export default function TrackerDetail() {
   const [goalPriority, setGoalPriority] = useState(0);
   const [goalNotes, setGoalNotes] = useState('');
   const [goalName, setGoalName] = useState('');
+  const [milestoneGoalId, setMilestoneGoalId] = useState<string | null>(null);
+  const [milestones, setMilestones] = useState<Array<{ id: string; goal_id: string; title: string; due_day: string | null; position: number; done_at: number | null }>>([]);
+  const [newMilestoneTitle, setNewMilestoneTitle] = useState('');
 
   const [newSubject, setNewSubject] = useState('');
   const [savedSubjects, setSavedSubjects] = useState<string[]>([]);
@@ -360,6 +367,36 @@ export default function TrackerDetail() {
     await load();
   };
 
+  const openMilestones = async (goalId: string) => {
+    setMilestoneGoalId(goalId);
+    setNewMilestoneTitle('');
+    const ms = await listMilestones(goalId);
+    setMilestones(ms);
+  };
+
+  const handleAddMilestone = async () => {
+    if (!milestoneGoalId || !newMilestoneTitle.trim()) return;
+    await addMilestone(milestoneGoalId, newMilestoneTitle.trim());
+    setNewMilestoneTitle('');
+    const ms = await listMilestones(milestoneGoalId);
+    setMilestones(ms);
+  };
+
+  const handleToggleMilestone = async (id: string, done: boolean) => {
+    await toggleMilestone(id, done);
+    if (milestoneGoalId) {
+      const ms = await listMilestones(milestoneGoalId);
+      setMilestones(ms);
+    }
+  };
+
+  const handleDeleteMilestone = async (id: string) => {
+    await deleteMilestone(id);
+    if (milestoneGoalId) {
+      const ms = await listMilestones(milestoneGoalId);
+      setMilestones(ms);
+    }
+  };
   const addCustom = async () => {
     const n = Number(customValue);
     if (!Number.isFinite(n)) {
@@ -479,7 +516,7 @@ export default function TrackerDetail() {
           goals={goals}
           views={views}
           onAdd={openGoalSheet}
-          onOpen={() => openGoalSheet()}
+          onOpen={(goalId) => openMilestones(goalId)}
           suggestMetric="count"
         />
 
@@ -595,7 +632,7 @@ export default function TrackerDetail() {
           goals={goals}
           views={views}
           onAdd={openGoalSheet}
-          onOpen={() => openGoalSheet()}
+          onOpen={(goalId) => openMilestones(goalId)}
           suggestMetric={tracker.config.summaries?.[0]?.fieldKey ? metric : 'count'}
         />
 
@@ -754,7 +791,7 @@ export default function TrackerDetail() {
           goals={goals}
           views={views}
           onAdd={openGoalSheet}
-          onOpen={() => openGoalSheet()}
+          onOpen={(goalId) => openMilestones(goalId)}
           suggestMetric={metric}
         />
       </View>
@@ -808,7 +845,7 @@ export default function TrackerDetail() {
           goals={goals}
           views={views}
           onAdd={openGoalSheet}
-          onOpen={() => openGoalSheet()}
+          onOpen={(goalId) => openMilestones(goalId)}
           suggestMetric={summaryMetric}
         />
 
@@ -890,7 +927,7 @@ export default function TrackerDetail() {
           goals={goals}
           views={views}
           onAdd={openGoalSheet}
-          onOpen={() => openGoalSheet()}
+          onOpen={(goalId) => openMilestones(goalId)}
           suggestMetric="count"
         />
 
@@ -1006,7 +1043,7 @@ export default function TrackerDetail() {
           goals={goals}
           views={views}
           onAdd={openGoalSheet}
-          onOpen={() => openGoalSheet()}
+          onOpen={(goalId) => openMilestones(goalId)}
           suggestMetric={metric}
         />
 
@@ -1398,6 +1435,62 @@ export default function TrackerDetail() {
             <View style={{ flexDirection: 'row', gap: space.sm, paddingTop: space.sm }}>
               <Button label="Cancel" variant="secondary" onPress={() => setGoalOpen(false)} style={{ flex: 1 }} />
               <Button label="Save goal" onPress={saveGoal} style={{ flex: 1 }} />
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal visible={milestoneGoalId !== null} transparent animationType="fade" onRequestClose={() => setMilestoneGoalId(null)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setMilestoneGoalId(null)}>
+          <Pressable style={[styles.modalCard, { backgroundColor: t.surface, maxHeight: '90%' }]} onPress={() => {}}>
+            <ScrollView style={{ maxHeight: 500 }}>
+              <View style={{ gap: space.md }}>
+                <AppText size={17} weight="700">
+                  Milestones
+                </AppText>
+                {milestones.length === 0 ? (
+                  <AppText size={15} muted>
+                    No milestones yet.
+                  </AppText>
+                ) : (
+                  milestones.map((m) => (
+                    <View key={m.id} style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm, paddingVertical: space.xs }}>
+                      <Pressable onPress={() => handleToggleMilestone(m.id, !m.done_at)}>
+                        <Ionicons
+                          name={m.done_at ? 'checkbox' : 'square-outline'}
+                          size={24}
+                          color={m.done_at ? t.success : t.textMuted}
+                        />
+                      </Pressable>
+                      <AppText
+                        size={15}
+                        style={{ flex: 1, textDecorationLine: m.done_at ? 'line-through' : 'none' }}
+                      >
+                        {m.title}
+                      </AppText>
+                      <Pressable onPress={() => handleDeleteMilestone(m.id)}>
+                        <Ionicons name="trash-outline" size={20} color={t.danger} />
+                      </Pressable>
+                    </View>
+                  ))
+                )}
+                <View style={{ flexDirection: 'row', gap: space.sm }}>
+                  <TextInput
+                    value={newMilestoneTitle}
+                    onChangeText={setNewMilestoneTitle}
+                    placeholder="Add a milestone, e.g. Week 1: practise 3 times"
+                    placeholderTextColor={t.textMuted}
+                    style={[styles.input, { borderColor: t.border, color: t.text, backgroundColor: t.surfaceAlt, flex: 1 }]}
+                  />
+                  <Button label="Add" onPress={handleAddMilestone} style={{ minHeight: TOUCH }} />
+                </View>
+                <AppText size={13} muted>
+                  {`${milestones.filter((m) => m.done_at).length} of ${milestones.length} complete`}
+                </AppText>
+              </View>
+            </ScrollView>
+            <View style={{ paddingTop: space.sm }}>
+              <Button label="Close" variant="secondary" onPress={() => setMilestoneGoalId(null)} />
             </View>
           </Pressable>
         </Pressable>
