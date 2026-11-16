@@ -275,7 +275,7 @@ export default function Social() {
           { title: 'Conversation ideas', items: convIdeas, color: '#4C6FFF' },
           { title: 'Other facts', items: otherFacts, color: '#6B6D73' },
         ].map(({ title, items, color }) =>
-          items.length > 0 || title === 'Birthdays' ? (
+          items.length > 0 ? (
             <View key={title} style={{ backgroundColor: '#FFFFFF', borderRadius: 12, padding: 16, marginBottom: 12 }}>
               <Text style={{ fontSize: 16, fontWeight: '600', marginBottom: 8, color }}>{title}</Text>
               {items.map((f) => (
@@ -420,9 +420,14 @@ export default function Social() {
               {p.circle}{p.met_context ? ` · ${p.met_context}` : ''}{p.cadence_days ? ` · every ${p.cadence_days}d` : ''}
             </Text>
           </View>
-          <Pressable onPress={() => openPersonSheet(p)} style={{ padding: 4 }}>
-            <Text style={{ color: '#7C5CE0', fontSize: 14 }}>Edit</Text>
-          </Pressable>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 }}>
+            <Pressable onPress={() => openPersonSheet(p)} style={{ paddingVertical: 6 }}>
+              <Text style={{ color: '#7C5CE0', fontSize: 14, fontWeight: '600' }}>Edit</Text>
+            </Pressable>
+            <Pressable onPress={() => deletePerson(p.id)}>
+              <Text style={{ color: '#DC2626', fontSize: 14, fontWeight: '600' }}>Delete</Text>
+            </Pressable>
+          </View>
         </Pressable>
       ))}
       {filteredPeople.length === 0 ? (
