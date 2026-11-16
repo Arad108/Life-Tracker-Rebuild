@@ -350,6 +350,27 @@ export async function deleteEntry(id: string): Promise<void> {
   await d.runAsync('DELETE FROM tracker_entries WHERE id = ?', [id]);
 }
 
+/** Re-inserts a removed entry (the "Undo" action on the removal toast). */
+export async function restoreEntry(entry: TrackerEntry, fields: TrackerField[]): Promise<void> {
+  const d = makeDriver();
+  await d.runAsync(
+    `INSERT OR REPLACE INTO tracker_entries
+      (id, tracker_id, occurred_at, day, data, value, note, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      entry.id,
+      entry.tracker_id,
+      entry.occurred_at,
+      entry.day,
+      JSON.stringify(entry.data),
+      numericSummary(fields, entry.data),
+      entry.note ?? '',
+      entry.created_at,
+      entry.updated_at,
+    ],
+  );
+}
+
 export async function countEntriesOnDay(trackerId: string, day: string): Promise<number> {
   const d = makeDriver();
   const row = await d.getFirstAsync<{ n: number }>(

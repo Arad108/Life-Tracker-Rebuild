@@ -6,6 +6,7 @@ import { makeDriver } from '../src/db';
 import { runAppMigrations } from '../src/appMigrations';
 import { runExtendedMigrations } from '../src/extendedMigrations';
 import { runTrackerMigrations } from '../src/tracker/migrations';
+import { ToastProvider } from '../src/ui/components';
 
 export default function RootLayout() {
   const [ready, setReady] = useState(false);
@@ -39,10 +40,13 @@ export default function RootLayout() {
     return null;
   }
   return (
-    <Stack screenOptions={{ headerShown: true }}>
-      <Stack.Screen name="tracker/new" options={{ headerShown: false }} />
-      <Stack.Screen name="tracker/[id]" options={{ headerShown: false }} />
-    </Stack>
+    <ToastProvider>
+      <Stack screenOptions={{ headerShown: true }}>
+        <Stack.Screen name="tracker/new" options={{ headerShown: false }} />
+        <Stack.Screen name="tracker/[id]" options={{ headerShown: false }} />
+        <Stack.Screen name="entry/[trackerId]" options={{ headerShown: false }} />
+      </Stack>
+    </ToastProvider>
   );
 }
 

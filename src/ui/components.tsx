@@ -1,14 +1,12 @@
 import React from 'react';
 import {
   ActivityIndicator,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Switch,
   Text,
   TextInput,
-  ToastAndroid,
   type TextInputProps,
   type TextStyle,
   View,
@@ -451,13 +449,101 @@ export function Row({
   return <View style={[styles.row, style]}>{children}</View>;
 }
 
-export function useToast() {
-  return {
-    show: (message: string) => {
-      // Android's native toast is what the shipped app uses (ToastAndroid).
-      if (Platform.OS === 'android') ToastAndroid.show(message, ToastAndroid.SHORT);
-    },
-  };
+export interface ToastOptions {
+  message: string;
+  actionLabel?: string;
+  onAction?: () => void;
+  duration?: number;
+}
+
+export interface ToastApi {
+  show: (input: string | ToastOptions) => void;
+}
+
+const ToastContext = React.createContext<ToastApi>({ show: () => {} });
+
+/** Same toast surface as the shipped app: inverted card above the tab bar. */
+export function ToastProvider({ children }: { children: React.ReactNode }) {
+  const t = useTheme();
+  const insets = useSafeAreaInsets();
+  const [current, setCurrent] = React.useState<(ToastOptions & { id: number }) | null>(null);
+  const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const hide = React.useCallback(() => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = null;
+    setCurrent(null);
+  }, []);
+
+  const show = React.useCallback((input: string | ToastOptions) => {
+    const options: ToastOptions = typeof input === 'string' ? { message: input } : input;
+    if (timer.current) clearTimeout(timer.current);
+    const item = { ...options, id: Date.now() + Math.random() };
+    setCurrent(item);
+    timer.current = setTimeout(() => {
+      setCurrent((cur) => (cur && cur.id === item.id ? null : cur));
+    }, options.duration ?? 4000);
+  }, []);
+
+  React.useEffect(() => {
+    return () => {
+      if (timer.current) clearTimeout(timer.current);
+    };
+  }, []);
+
+  return (
+    <ToastContext.Provider value={{ show }}>
+      {children}
+      {current ? (
+        <View
+          pointerEvents="box-none"
+          style={{ position: 'absolute', left: space.lg, right: space.lg, bottom: insets.bottom + 84 }}
+        >
+          <View
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: space.md,
+              minHeight: 52,
+              paddingHorizontal: space.lg,
+              borderRadius: radius.md,
+              backgroundColor: t.text,
+            }}
+          >
+            <View style={{ flex: 1 }}>
+              <AppText size={15} color={t.bg} numberOfLines={2}>
+                {current.message}
+              </AppText>
+            </View>
+            {current.actionLabel ? (
+              <Pressable
+                onPress={() => {
+                  current.onAction?.();
+                  hide();
+                }}
+                accessibilityRole="button"
+                hitSlop={8}
+                style={{ minHeight: 44, justifyContent: 'center' }}
+              >
+                <AppText
+                  size={13}
+                  weight="700"
+                  color={t.bg}
+                  style={{ textDecorationLine: 'underline' }}
+                >
+                  {current.actionLabel}
+                </AppText>
+              </Pressable>
+            ) : null}
+          </View>
+        </View>
+      ) : null}
+    </ToastContext.Provider>
+  );
+}
+
+export function useToast(): ToastApi {
+  return React.useContext(ToastContext);
 }
 
 const styles = StyleSheet.create({

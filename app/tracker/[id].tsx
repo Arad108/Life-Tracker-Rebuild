@@ -3,17 +3,23 @@ import {
   Alert,
   Modal,
   Pressable,
-  ScrollView,
   StyleSheet,
-  Text,
   TextInput,
   View,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
-import { Screen, ScreenHeader, AppText, Card, Button, Chip, ChipRow, IconBadge, ProgressBar, SwitchRow, useToast } from '../../src/ui/components';
-import { useTheme, space, radius, TOUCH, GUTTER } from '../../src/ui/theme';
+import {
+  AppText,
+  Button,
+  Chip,
+  ChipRow,
+  Screen,
+  SwitchRow,
+  useToast,
+} from '../../src/ui/components';
+import { useTheme, space, radius, TOUCH } from '../../src/ui/theme';
 import {
   getTracker,
   listFields,
@@ -22,6 +28,7 @@ import {
   updateTracker,
   deleteTracker,
   deleteEntry,
+  restoreEntry,
   newId,
   getScheduleForTracker,
   getSetting,
@@ -29,31 +36,84 @@ import {
   removeSetting,
 } from '../../src/tracker/repository';
 import { makeDriver } from '../../src/db';
-import { dayKey, daysBack, addDays } from '../../src/tracker/dates';
-import { detectPresentation, primaryField } from '../../src/tracker/presentation';
-import { PRESENTATIONS, type Tracker, type TrackerField } from '../../src/tracker/types';
+import { dayKey, addDays } from '../../src/tracker/dates';
+import { detectPresentation, primaryField, liveDefaults } from '../../src/tracker/presentation';
+import {
+  PRESENTATIONS,
+  SESSION_PRESETS,
+  type Tracker,
+  type TrackerEntry,
+  type TrackerField,
+  type TrackerSchedule,
+} from '../../src/tracker/types';
+import {
+  aggregate,
+  computeSummary,
+  currentStreak,
+  dailySeries,
+  formatDuration,
+  formatFieldValue,
+  formatHHMM,
+  formatQuantity,
+  formatTime,
+  goalViews,
+  metricValue,
+  viewsOf,
+  type GoalRow,
+  type TrackerWithFields,
+} from '../../src/tracker/format';
+import { Bars, EntryTimeline, GoalsStrip, Insights, Ring } from '../../src/tracker/space';
 
-function Ring({ size = 216, stroke = 16, progress, color, trackColor, children }: {
-  size?: number; stroke?: number; progress: number; color: string; trackColor: string; children?: React.ReactNode;
-}) {
-  const half = size / 2;
-  const p = Math.max(0, Math.min(1, progress));
-  const angle = p * 360;
-  const rightRotate = angle <= 180 ? angle : 180;
-  const leftRotate = angle > 180 ? angle - 180 : 0;
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function describeTrackerSchedule(tracker: Tracker): string {
+  const schedule = tracker.config?.schedule as
+    | { kind?: string; days?: number[]; count?: number }
+    | undefined;
+  if (!schedule || schedule.kind === 'none' || !schedule.kind) return 'No set frequency';
+  if (schedule.kind === 'daily') return 'Every day';
+  if (schedule.kind === 'days') {
+    const days = schedule.days ?? [];
+    return `On ${days.map((d) => WEEKDAYS[d]).join(', ')}`;
+  }
+  if (schedule.kind === 'weekly_count') return `${schedule.count ?? 0} times per week`;
+  return 'No set frequency';
+}
+
+function describeScheduleRow(row: TrackerSchedule): string {
+  const time = formatHHMM(row.time || '09:00');
+  if (row.kind === 'interval') {
+    const every =
+      row.interval_minutes % 60 === 0
+        ? row.interval_minutes === 60
+          ? 'Every hour'
+          : `Every ${row.interval_minutes / 60} hours`
+        : `Every ${row.interval_minutes} minutes`;
+    const window =
+      row.window_start && row.window_end
+        ? `, ${formatHHMM(row.window_start)} to ${formatHHMM(row.window_end)}`
+        : '';
+    return `${every}${window}`;
+  }
+  if (row.kind === 'weekdays') {
+    const days = row.days ?? [];
+    let label: string;
+    if (days.length === 7) label = 'Every day';
+    else if (days.length === 5 && [1, 2, 3, 4, 5].every((d) => days.includes(d))) label = 'Weekdays';
+    else if (days.length === 2 && days.includes(0) && days.includes(6)) label = 'Weekends';
+    else label = [1, 2, 3, 4, 5, 6, 0].filter((d) => days.includes(d)).map((d) => WEEKDAYS[d]).join(', ');
+    return `${label} at ${time}`;
+  }
+  if (row.kind === 'once') return `Once at ${time}`;
+  if (row.kind === 'yearly') return `Every year at ${time}`;
+  return `Every day at ${time}`;
+}
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <View style={{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }}>
-      <View style={{ position: 'absolute', width: size, height: size, borderRadius: size / 2, borderWidth: stroke, borderColor: trackColor }} />
-      <View style={{ position: 'absolute', top: 0, left: half, width: half, height: size, overflow: 'hidden' }}>
-        <View style={{ width: size, height: size, borderRadius: size / 2, borderWidth: stroke, borderColor: color, marginLeft: -half, transform: [{ rotate: `${rightRotate}deg` }] }} />
-      </View>
-      {angle > 180 ? (
-        <View style={{ position: 'absolute', top: 0, left: 0, width: half, height: size, overflow: 'hidden' }}>
-          <View style={{ width: size, height: size, borderRadius: size / 2, borderWidth: stroke, borderColor: color, transform: [{ rotate: `${leftRotate}deg` }] }} />
-        </View>
-      ) : null}
+    <AppText size={13} weight="500" muted>
       {children}
-    </View>
+    </AppText>
   );
 }
 
@@ -63,29 +123,42 @@ export default function TrackerDetail() {
   const t = useTheme();
   const toast = useToast();
 
-  const [tracker, setTracker] = useState<Tracker | null>(null);
-  const [fields, setFields] = useState<TrackerField[]>([]);
-  const [entries, setEntries] = useState<any[]>([]);
-  const [goals, setGoals] = useState<any[]>([]);
-  const [scheduleSummary, setScheduleSummary] = useState<string>('No set frequency');
+  const [tracker, setTracker] = useState<TrackerWithFields | null>(null);
+  const [entries, setEntries] = useState<TrackerEntry[]>([]);
+  const [goals, setGoals] = useState<GoalRow[]>([]);
+  const [schedule, setSchedule] = useState<TrackerSchedule | null>(null);
   const [loading, setLoading] = useState(true);
   const [customOpen, setCustomOpen] = useState(false);
   const [customValue, setCustomValue] = useState('');
+  const [goalOpen, setGoalOpen] = useState(false);
+  const [goalInput, setGoalInput] = useState('');
+  const [goalMetric, setGoalMetric] = useState('count');
+
+  const [newSubject, setNewSubject] = useState('');
+  const [savedSubjects, setSavedSubjects] = useState<string[]>([]);
+  const [timers, setTimers] = useState<Record<string, { start: number; running: boolean }>>({});
+  const [now, setNow] = useState(Date.now());
 
   const load = useCallback(async () => {
     if (!id) return;
     const tr = await getTracker(String(id));
-    setTracker(tr);
-    if (!tr) { setLoading(false); return; }
+    if (!tr) {
+      setTracker(null);
+      setLoading(false);
+      return;
+    }
     const f = await listFields(tr.id, false);
-    setFields(f);
+    const withFields: TrackerWithFields = { ...tr, fields: f };
+    setTracker(withFields);
     const e = await listEntries(tr.id, 200);
     setEntries(e);
     const d = makeDriver();
-    const g = await d.getAllAsync<any>('SELECT * FROM goals WHERE space_key = ? AND status = ?', [`tracker:${tr.id}`, 'active']);
+    const g = await d.getAllAsync<GoalRow>(
+      'SELECT * FROM goals WHERE space_key = ? AND status = ?',
+      [`tracker:${tr.id}`, 'active'],
+    );
     setGoals(g || []);
-    const sch = await getScheduleForTracker(tr.id);
-    setScheduleSummary(sch ? sch.kind : 'No set frequency');
+    setSchedule(await getScheduleForTracker(tr.id));
     const subjRaw = await getSetting(`subjects:${tr.id}`);
     if (subjRaw) {
       try {
@@ -96,45 +169,38 @@ export default function TrackerDetail() {
     setLoading(false);
   }, [id]);
 
-  useEffect(() => { load(); }, [load]);
-
-  const [newSubject, setNewSubject] = useState('');
-  const [savedSubjects, setSavedSubjects] = useState<string[]>([]);
-  const [timers, setTimers] = useState<Record<string, { start: number; running: boolean }>>({});
-  const [now, setNow] = useState(Date.now());
-  const [sessionRunning, setSessionRunning] = useState(false);
-  const [sessionStart, setSessionStart] = useState(0);
-  const [goalOpen, setGoalOpen] = useState(false);
-  const [goalInput, setGoalInput] = useState('');
+  useEffect(() => {
+    load();
+  }, [load]);
 
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(id);
+    const interval = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
     if (!tracker) return;
-    const subs = Array.from(new Set([
-      ...entries.map((e: any) => String(e.data?.[(tracker.config.titleFieldKey ?? 'subject')] ?? '')).filter(Boolean),
-      ...savedSubjects,
-    ]));
+    const subs = Array.from(
+      new Set([
+        ...entries
+          .map((e) => String(e.data?.[tracker.config.titleFieldKey ?? 'subject'] ?? ''))
+          .filter(Boolean),
+        ...savedSubjects,
+      ]),
+    );
     (async () => {
       const out: Record<string, { start: number; running: boolean }> = {};
       for (const s of subs) {
         const v = await getSetting(`timer:${tracker.id}:${s}`);
-        if (v) { try { out[s] = JSON.parse(v); } catch {} }
+        if (v) {
+          try {
+            out[s] = JSON.parse(v);
+          } catch {}
+        }
       }
       setTimers(out);
     })();
   }, [tracker?.id, entries.length, savedSubjects.length]);
-
-  useEffect(() => {
-    if (!tracker) return;
-    (async () => {
-      const v = await getSetting(`timer:${tracker.id}:session`);
-      if (v) { try { const st = JSON.parse(v); if (st.running) { setSessionRunning(true); setSessionStart(st.start); } } catch {} }
-    })();
-  }, [tracker?.id]);
 
   if (loading || !tracker) {
     return (
@@ -144,95 +210,828 @@ export default function TrackerDetail() {
     );
   }
 
-  const shape = { config: tracker.config, fields };
-  const presentation = detectPresentation(shape as any);
-  const primary = primaryField(shape as any);
+  const presentation = detectPresentation(tracker);
+  const primary = primaryField(tracker);
   const primaryKey = primary?.key ?? '';
+  const unit = primary?.unit ?? '';
+  const defaults = liveDefaults(tracker);
   const today = dayKey();
-  const todays = entries.filter((e: any) => e.day === today);
-  const sessionElapsed = sessionRunning ? Math.floor((now - sessionStart) / 1000) : 0;
+  const views = viewsOf(entries);
+  const todays = views.filter((v) => v.day === today);
+  const active = tracker.status === 'active';
 
-  const startSession = async () => {
-    const st = { start: Date.now(), running: true };
-    setSessionRunning(true);
-    setSessionStart(st.start);
-    await setSetting(`timer:${tracker.id}:session`, JSON.stringify(st));
+  const dayRateGoal = (metric: string) =>
+    goals.find((g) => g.kind === 'rate' && g.period === 'day' && g.metric === metric);
+
+  const window14 = { from: addDays(today, -13), to: today };
+  const window7 = { from: addDays(today, -6), to: today };
+
+  const addEntry = async (data: Record<string, unknown>) => {
+    const entryId = await saveEntry({
+      trackerId: tracker.id,
+      data,
+      occurredAt: Date.now(),
+      fields: tracker.fields,
+    });
+    await load();
+    return entryId;
   };
-  const stopSession = async () => {
-    if (!sessionRunning) return;
-    const elapsedMin = Math.max(1, Math.round((Date.now() - sessionStart) / 60000));
-    const data: Record<string, unknown> = { ...liveDefaults, [primaryKey]: elapsedMin };
-    await saveEntry({ trackerId: tracker.id, data, occurredAt: Date.now(), fields });
-    setSessionRunning(false);
-    setSessionStart(0);
-    await removeSetting(`timer:${tracker.id}:session`);
-    toast.show(`Logged ${elapsedMin} min`);
+
+  const removeToday = async (entry: TrackerEntry, label: string) => {
+    await deleteEntry(entry.id);
+    await load();
+    toast.show({
+      message: `Removed ${label}`,
+      actionLabel: 'Undo',
+      onAction: async () => {
+        await restoreEntry(entry, tracker.fields);
+        await load();
+      },
+    });
+  };
+
+  /* ------------------------------------------------------------- shared bits */
+
+  const onSetShowOnToday = async (next: boolean) => {
+    await updateTracker(tracker.id, { show_on_dashboard: next ? 1 : 0 });
     await load();
   };
-  // streak: consecutive days with entries ending today
-  let streak = 0;
-  {
-    let d = today;
-    while (entries.some((e: any) => e.day === d)) {
-      streak += 1;
-      d = addDays(d, -1);
+
+  const onLayoutChange = async (key: string) => {
+    await updateTracker(tracker.id, { config: { ...tracker.config, presentation: key as never } });
+    await load();
+  };
+
+  const onPause = async () => {
+    await updateTracker(tracker.id, { status: 'paused' });
+    await load();
+  };
+
+  const onResume = async () => {
+    await updateTracker(tracker.id, { status: 'active' });
+    await load();
+  };
+
+  const onArchive = () => {
+    Alert.alert(
+      'Archive this Space?',
+      'It disappears from Today and stops reminders. All history is kept and you can restore it any time.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Archive',
+          onPress: async () => {
+            await updateTracker(tracker.id, { status: 'archived' });
+            router.back();
+          },
+        },
+      ],
+    );
+  };
+
+  const onDelete = () => {
+    Alert.alert(
+      'Delete permanently?',
+      `This erases "${tracker.name}" and all ${entries.length} of its entries. This cannot be undone. Archive it instead if you might want it later.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete forever',
+          style: 'destructive',
+          onPress: async () => {
+            await deleteTracker(tracker.id);
+            router.back();
+          },
+        },
+      ],
+    );
+  };
+
+  const openGoalSheet = (metric?: string) => {
+    setGoalMetric(metric ?? (primaryKey ? `sum:${primaryKey}` : 'count'));
+    setGoalInput('');
+    setGoalOpen(true);
+  };
+
+  const saveGoal = async () => {
+    const n = Number(goalInput);
+    if (!Number.isFinite(n) || n <= 0) {
+      toast.show('Enter a positive number');
+      return;
     }
-  }
-  const todayTotal = todays.reduce((s: number, e: any) => {
-    const v = e.data?.[primaryKey];
-    const n = typeof v === 'number' ? v : Number(v);
-    return s + (Number.isFinite(n) ? n : 0);
-  }, 0);
+    const d = makeDriver();
+    await d.runAsync('DELETE FROM goals WHERE space_key = ?', [`tracker:${tracker.id}`]);
+    await d.runAsync(
+      `INSERT INTO goals (id, title, space_key, kind, metric, target, unit, period, status, created_at, updated_at) VALUES (?, ?, ?, 'rate', ?, ?, ?, 'day', 'active', ?, ?)`,
+      [
+        newId('goal'),
+        `${tracker.name}: at least ${n} ${unit} per day`.trim(),
+        `tracker:${tracker.id}`,
+        goalMetric,
+        n,
+        unit,
+        Date.now(),
+        Date.now(),
+      ],
+    );
+    setGoalOpen(false);
+    await load();
+  };
 
-  const weekDays = daysBack(today, 7);
-  const weekValues = weekDays.map((d) => {
-    const dayEntries = entries.filter((e: any) => e.day === d);
-    const v = dayEntries.reduce((s: number, e: any) => {
-      const val = e.data?.[primaryKey];
-      const n = typeof val === 'number' ? val : Number(val);
-      return s + (Number.isFinite(n) ? n : 0);
-    }, 0);
-    return { day: d, value: v };
-  });
-  const weekMax = Math.max(1, ...weekValues.map((w) => w.value));
-  const goal = tracker.config.goal ?? (goals.length ? { target: goals[0].target, unit: goals[0].unit, period: goals[0].period, title: goals[0].title } : undefined);
-  const goalTarget = goal ? Number(goal.target) : 0;
-  const goalProgress = goalTarget > 0 ? todayTotal / goalTarget : 0;
+  const addCustom = async () => {
+    const n = Number(customValue);
+    if (!Number.isFinite(n)) {
+      toast.show('Enter a number');
+      return;
+    }
+    const entryId = await addEntry({ ...defaults, [primaryKey]: n });
+    setCustomOpen(false);
+    setCustomValue('');
+    toast.show({
+      message: `Added ${formatFieldValue(primary, n)}`,
+      actionLabel: 'Undo',
+      onAction: async () => {
+        await deleteEntry(entryId);
+        await load();
+      },
+    });
+  };
 
-  const quickValues = tracker.config.quickAdd?.values ?? [];
+  /* ----------------------------------------------------------- check branch */
 
-  const liveDefaults = (tracker.config.defaults ?? {}) as Record<string, unknown>;
-  const subjectFld = fields.find((f) => f.key === (tracker.config.titleFieldKey ?? 'subject')) ?? fields.find((f) => f.type === 'text');
-  const durationFld = fields.find((f) => f.type === 'duration');
+  const renderCheck = () => {
+    const done = todays.length > 0;
+    const streak = currentStreak(entries.map((e) => e.day), today);
+    const last14 = dailySeries({ agg: 'count', fieldKey: undefined, label: '' }, views, window14.from, today);
+    const toggle = async () => {
+      if (done) {
+        const removed = todays.map((v) => v.entry!).filter(Boolean);
+        await Promise.all(removed.map((e) => deleteEntry(e.id)));
+        await load();
+        toast.show({
+          message: 'Marked not done',
+          actionLabel: 'Undo',
+          onAction: async () => {
+            await Promise.all(removed.map((e) => restoreEntry(e, tracker.fields)));
+            await load();
+          },
+        });
+      } else {
+        const entryId = await addEntry({ ...defaults, [primaryKey]: true });
+        toast.show({
+          message: `${tracker.name}: done`,
+          actionLabel: 'Undo',
+          onAction: async () => {
+            await deleteEntry(entryId);
+            await load();
+          },
+        });
+      }
+    };
+
+    return (
+      <View style={{ gap: space.xl }}>
+        <View style={{ alignItems: 'center', gap: space.md, paddingTop: space.md }}>
+          <Pressable
+            onPress={toggle}
+            accessibilityRole="button"
+            accessibilityLabel={done ? `${tracker.name} done today. Tap to undo` : `Mark ${tracker.name} done`}
+            style={{
+              width: 168,
+              height: 168,
+              borderRadius: 84,
+              backgroundColor: done ? tracker.color : 'transparent',
+              borderWidth: done ? 0 : 3,
+              borderColor: tracker.color,
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <Ionicons name="checkmark" size={56} color={done ? '#fff' : tracker.color} />
+            <AppText size={17} weight="600" color={done ? '#fff' : tracker.color}>
+              {done ? 'Done today' : 'Mark done'}
+            </AppText>
+          </Pressable>
+          {tracker.config.showStreak && streak > 0 ? (
+            <AppText size={13} weight="500" muted>
+              {`${streak} day${streak === 1 ? '' : 's'} in a row`}
+            </AppText>
+          ) : null}
+        </View>
+
+        <View style={{ gap: space.sm }}>
+          <SectionLabel>Last 14 days</SectionLabel>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+            {last14.map((day) => {
+              const isDone = day.value > 0;
+              const dim = day.day === today && day.value === 0;
+              return (
+                <View
+                  key={day.day}
+                  accessibilityLabel={`${WEEKDAYS[new Date(day.day).getDay()]}: ${isDone ? 'done' : 'not done'}`}
+                  style={{
+                    width: 34,
+                    height: 34,
+                    borderRadius: 17,
+                    backgroundColor: isDone ? tracker.color : t.surfaceAlt,
+                    opacity: dim ? 0.5 : 1,
+                  }}
+                />
+              );
+            })}
+          </View>
+        </View>
+
+        <SwitchRow
+          label="Show streak"
+          hint="Optional. Counts consecutive days."
+          value={!!tracker.config.showStreak}
+          onChange={async (next) => {
+            await updateTracker(tracker.id, { config: { ...tracker.config, showStreak: next } });
+            await load();
+          }}
+        />
+
+        <GoalsStrip
+          tracker={tracker}
+          goals={goals}
+          views={views}
+          onAdd={openGoalSheet}
+          onOpen={() => openGoalSheet()}
+          suggestMetric="count"
+        />
+
+        <View style={{ gap: space.sm }}>
+          <SectionLabel>History</SectionLabel>
+          <EntryTimeline tracker={tracker} entries={entries} />
+        </View>
+      </View>
+    );
+  };
+
+  /* ----------------------------------------------------------- count branch */
+
+  const renderCount = () => {
+    const metric = `sum:${primaryKey}`;
+    const value = metricValue(metric, todays);
+    const goal = dayRateGoal(metric);
+    const series = dailySeries(
+      { agg: 'sum', fieldKey: primaryKey, label: '' },
+      views,
+      window14.from,
+      today,
+    );
+
+    const add = async () => {
+      const entryId = await addEntry({ ...defaults, [primaryKey]: 1 });
+      toast.show({
+        message: `${tracker.name} +1`,
+        actionLabel: 'Undo',
+        onAction: async () => {
+          await deleteEntry(entryId);
+          await load();
+        },
+      });
+    };
+
+    const subtract = async () => {
+      const entry = todays[0]?.entry;
+      if (!entry) return;
+      await deleteEntry(entry.id);
+      await load();
+      toast.show({
+        message: `${tracker.name} −1`,
+        actionLabel: 'Undo',
+        onAction: async () => {
+          await restoreEntry(entry, tracker.fields);
+          await load();
+        },
+      });
+    };
+
+    return (
+      <View style={{ gap: space.xl }}>
+        <View style={{ alignItems: 'center', gap: space.md, paddingTop: space.md }}>
+          <AppText size={40} weight="700" numeric style={{ fontSize: 72, lineHeight: 78 }}>
+            {Math.round(value)}
+          </AppText>
+          <AppText size={13} weight="500" muted>
+            {goal ? `of ${goal.target} today` : 'today'}
+          </AppText>
+          <View style={{ flexDirection: 'row', gap: space.xl, marginTop: space.md }}>
+            <Pressable
+              onPress={subtract}
+              accessibilityRole="button"
+              accessibilityLabel="Subtract one"
+              disabled={todays.length === 0}
+              style={{
+                width: 84,
+                height: 84,
+                borderRadius: 42,
+                alignItems: 'center',
+                justifyContent: 'center',
+                backgroundColor: 'transparent',
+                borderWidth: 2,
+                borderColor: t.border,
+                opacity: todays.length === 0 ? 0.4 : 1,
+              }}
+            >
+              <Ionicons name="remove" size={36} color={t.text} />
+            </Pressable>
+            <Pressable
+              onPress={add}
+              accessibilityRole="button"
+              accessibilityLabel="Add one"
+              style={{
+                width: 84,
+                height: 84,
+                borderRadius: 42,
+                alignItems: 'center',
+                justifyContent: 'center',
+                backgroundColor: tracker.color,
+                borderWidth: 1,
+                borderColor: t.border,
+              }}
+            >
+              <Ionicons name="add" size={40} color="#fff" />
+            </Pressable>
+          </View>
+        </View>
+
+        <View style={{ gap: space.sm }}>
+          <SectionLabel>Last 14 days</SectionLabel>
+          <Bars
+            values={series.map((s) => s.value)}
+            color={tracker.color}
+            goal={goal?.target}
+            highlightLast
+          />
+        </View>
+
+        <GoalsStrip
+          tracker={tracker}
+          goals={goals}
+          views={views}
+          onAdd={openGoalSheet}
+          onOpen={() => openGoalSheet()}
+          suggestMetric={tracker.config.summaries?.[0]?.fieldKey ? metric : 'count'}
+        />
+
+        <View style={{ gap: space.sm }}>
+          <SectionLabel>History</SectionLabel>
+          <EntryTimeline tracker={tracker} entries={entries} />
+        </View>
+      </View>
+    );
+  };
+
+  /* -------------------------------------------------------- quantity branch */
+
+  const renderQuantity = () => {
+    const metric = `sum:${primaryKey}`;
+    const total = metricValue(metric, todays);
+    const goal = dayRateGoal(metric);
+    const progress = goal && goal.target > 0 ? total / goal.target : 0;
+    const week = dailySeries(
+      { agg: 'sum', fieldKey: primaryKey, label: '' },
+      views,
+      window7.from,
+      today,
+    );
+    const quickValues = tracker.config.quickAdd?.values ?? [];
+
+    const quickAdd = async (value: number) => {
+      const entryId = await addEntry({ ...defaults, [primaryKey]: value });
+      toast.show({
+        message: `Added ${formatFieldValue(primary, value)}`,
+        actionLabel: 'Undo',
+        onAction: async () => {
+          await deleteEntry(entryId);
+          await load();
+        },
+      });
+    };
+
+    return (
+      <View style={{ gap: space.xl }}>
+        <View style={{ alignItems: 'center', paddingTop: space.md }}>
+          <Ring size={216} stroke={16} progress={progress} color={tracker.color}>
+            <AppText size={40} weight="700" numeric>
+              {formatQuantity(total, unit)}
+            </AppText>
+            <AppText size={13} weight="500" muted>
+              {goal ? `of ${formatQuantity(goal.target, unit)} today` : 'today'}
+            </AppText>
+          </Ring>
+        </View>
+
+        <View style={{ flexDirection: 'row', gap: space.sm }}>
+          {quickValues.map((value) => (
+            <Pressable
+              key={value}
+              onPress={() => quickAdd(value)}
+              accessibilityRole="button"
+              accessibilityLabel={`Add ${formatFieldValue(primary, value)}`}
+              style={{
+                flex: 1,
+                minHeight: 60,
+                borderRadius: radius.lg,
+                backgroundColor: tracker.color,
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <AppText size={17} weight="600" color="#fff" numeric>
+                {`+${formatQuantity(value, unit)}`}
+              </AppText>
+            </Pressable>
+          ))}
+          <Pressable
+            onPress={() => router.push({ pathname: '/entry/[trackerId]', params: { trackerId: tracker.id } })}
+            accessibilityRole="button"
+            accessibilityLabel="Custom amount"
+            style={{
+              flex: 1,
+              minHeight: 60,
+              borderRadius: radius.lg,
+              borderWidth: 1.5,
+              borderColor: t.border,
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <AppText size={17} weight="600">
+              Other
+            </AppText>
+          </Pressable>
+        </View>
+
+        <View style={{ gap: space.sm }}>
+          <SectionLabel>Today</SectionLabel>
+          {todays.length > 0 ? (
+            todays.map((view) => (
+              <View
+                key={view.id}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  minHeight: TOUCH,
+                  borderBottomWidth: 0.5,
+                  borderBottomColor: t.border,
+                }}
+              >
+                <AppText size={12} muted numeric style={{ width: 70 }}>
+                  {formatTime(view.occurredAt)}
+                </AppText>
+                <Pressable
+                  style={{ flex: 1, minHeight: TOUCH, justifyContent: 'center' }}
+                  onPress={() =>
+                    router.push({
+                      pathname: '/entry/[trackerId]',
+                      params: { trackerId: tracker.id, entryId: view.id ?? '' },
+                    })
+                  }
+                >
+                  <AppText size={15} numeric>
+                    {formatFieldValue(primary, view.values[primaryKey])}
+                  </AppText>
+                </Pressable>
+                <Pressable
+                  onPress={() =>
+                    view.entry &&
+                    removeToday(view.entry, formatFieldValue(primary, view.values[primaryKey]) || 'entry')
+                  }
+                  accessibilityLabel="Remove this entry"
+                  style={{ minHeight: TOUCH, justifyContent: 'center', paddingHorizontal: space.sm }}
+                >
+                  <AppText size={13} weight="500" muted>
+                    Remove
+                  </AppText>
+                </Pressable>
+              </View>
+            ))
+          ) : (
+            <AppText size={15} muted>
+              Nothing yet today.
+            </AppText>
+          )}
+        </View>
+
+        <View style={{ gap: space.sm }}>
+          <SectionLabel>This week</SectionLabel>
+          <Bars
+            values={week.map((w) => w.value)}
+            color={tracker.color}
+            goal={goal?.target}
+            highlightLast
+          />
+        </View>
+
+        <GoalsStrip
+          tracker={tracker}
+          goals={goals}
+          views={views}
+          onAdd={openGoalSheet}
+          onOpen={() => openGoalSheet()}
+          suggestMetric={metric}
+        />
+      </View>
+    );
+  };
+
+  /* ------------------------------------------------------------- log branch */
+
+  const renderLog = () => {
+    const summaries = tracker.config.summaries ?? [];
+    const summaryMetric = summaries[0]?.fieldKey ? `sum:${summaries[0].fieldKey}` : 'count';
+    return (
+      <View style={{ gap: space.xl }}>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.xl, paddingTop: space.md }}>
+          {summaries.map((spec, index) => {
+            const summary = computeSummary(tracker, spec as never, todays);
+            return (
+              <View key={spec.label ?? index} style={{ gap: 2 }}>
+                {index === 0 ? (
+                  <AppText size={40} weight="700" numeric color={tracker.color}>
+                    {summary.text}
+                  </AppText>
+                ) : (
+                  <AppText size={24} weight="600" numeric>
+                    {summary.text}
+                  </AppText>
+                )}
+                <AppText size={13} weight="500" muted>
+                  {`${summary.label} today`}
+                </AppText>
+              </View>
+            );
+          })}
+        </View>
+
+        {active ? (
+          <Button
+            label={`Log ${tracker.name}`}
+            icon="add"
+            color={tracker.color}
+            onPress={() =>
+              router.push({ pathname: '/entry/[trackerId]', params: { trackerId: tracker.id } })
+            }
+          />
+        ) : null}
+
+        {entries.length > 0 ? <Insights tracker={tracker} views={views} summaries={summaries as never} /> : null}
+
+        <GoalsStrip
+          tracker={tracker}
+          goals={goals}
+          views={views}
+          onAdd={openGoalSheet}
+          onOpen={() => openGoalSheet()}
+          suggestMetric={summaryMetric}
+        />
+
+        <View style={{ gap: space.sm }}>
+          <SectionLabel>History</SectionLabel>
+          <EntryTimeline
+            tracker={tracker}
+            entries={entries}
+            empty="Your history for this tracker will show up here."
+          />
+        </View>
+      </View>
+    );
+  };
+
+  /* ---------------------------------------------------------- rating branch */
+
+  const renderRating = () => {
+    const current = todays.length > 0 ? Number(todays[0].values[primaryKey]) || 0 : 0;
+    const series = dailySeries(
+      { agg: 'avg', fieldKey: primaryKey, label: '' },
+      views,
+      window14.from,
+      today,
+    );
+
+    const rate = async (value: number) => {
+      const existing = todays[0];
+      if (existing?.entry) {
+        await saveEntry({
+          id: existing.entry.id,
+          trackerId: tracker.id,
+          data: { ...existing.values, [primaryKey]: value },
+          occurredAt: existing.occurredAt,
+          fields: tracker.fields,
+        });
+      } else {
+        await addEntry({ ...defaults, [primaryKey]: value });
+      }
+      await load();
+    };
+
+    return (
+      <View style={{ gap: space.xl }}>
+        <View style={{ alignItems: 'center', gap: space.sm, paddingTop: space.md }}>
+          <AppText size={13} weight="500" muted>
+            {current > 0 ? `Today: ${current} of 5` : 'How is today?'}
+          </AppText>
+          <View style={{ flexDirection: 'row', gap: space.xs }}>
+            {[1, 2, 3, 4, 5].map((star) => (
+              <Pressable
+                key={star}
+                onPress={() => rate(star)}
+                accessibilityLabel={`${star} star${star === 1 ? '' : 's'}`}
+                style={{
+                  width: TOUCH + 8,
+                  height: TOUCH + 8,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Ionicons
+                  name={star <= current ? 'star' : 'star-outline'}
+                  size={44}
+                  color={star <= current ? tracker.color : t.textMuted}
+                />
+              </Pressable>
+            ))}
+          </View>
+        </View>
+
+        <View style={{ gap: space.sm }}>
+          <SectionLabel>Last 14 days</SectionLabel>
+          <Bars values={series.map((s) => s.value)} color={tracker.color} height={96} highlightLast />
+        </View>
+
+        <GoalsStrip
+          tracker={tracker}
+          goals={goals}
+          views={views}
+          onAdd={openGoalSheet}
+          onOpen={() => openGoalSheet()}
+          suggestMetric="count"
+        />
+
+        <View style={{ gap: space.sm }}>
+          <SectionLabel>History</SectionLabel>
+          <EntryTimeline tracker={tracker} entries={entries} />
+        </View>
+      </View>
+    );
+  };
+
+  /* --------------------------------------------------------- session branch */
+
+  const renderSession = () => {
+    const metric = `sum:${primaryKey}`;
+    const total = metricValue(metric, todays);
+    const goal = dayRateGoal(metric);
+    const series = dailySeries(
+      { agg: 'sum', fieldKey: primaryKey, label: '' },
+      views,
+      window14.from,
+      today,
+    );
+    const firstLogged = entries
+      .map((e) => Number(e.data?.[primaryKey]))
+      .find((n) => Number.isFinite(n) && n > 0);
+    const chips = Array.from(
+      new Set([...(firstLogged ? [firstLogged] : []), ...SESSION_PRESETS]),
+    ).slice(0, 6);
+
+    const logSession = async (minutes: number) => {
+      const entryId = await addEntry({ ...defaults, [primaryKey]: minutes });
+      toast.show({
+        message: `${tracker.name}: ${formatDuration(minutes)}`,
+        actionLabel: 'Undo',
+        onAction: async () => {
+          await deleteEntry(entryId);
+          await load();
+        },
+      });
+    };
+
+    return (
+      <View style={{ gap: space.xl }}>
+        <View style={{ alignItems: 'center', gap: space.xs, paddingTop: space.md }}>
+          <AppText size={40} weight="700" numeric>
+            {total > 0 ? formatDuration(total) : '0 min'}
+          </AppText>
+          <AppText size={13} weight="500" muted>
+            {goal ? `of ${formatDuration(goal.target)} today` : 'today'}
+          </AppText>
+        </View>
+
+        <View style={{ gap: space.sm }}>
+          <SectionLabel>Log a session</SectionLabel>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>
+            {chips.map((minutes) => (
+              <Pressable
+                key={minutes}
+                onPress={() => logSession(minutes)}
+                accessibilityRole="button"
+                accessibilityLabel={`Log ${formatDuration(minutes)}`}
+                style={{
+                  minHeight: 52,
+                  minWidth: '30%',
+                  flexGrow: 1,
+                  borderRadius: radius.lg,
+                  backgroundColor: tracker.color,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <AppText size={17} weight="600" color="#fff" numeric>
+                  {formatDuration(minutes)}
+                </AppText>
+              </Pressable>
+            ))}
+            <Pressable
+              onPress={() =>
+                router.push({ pathname: '/entry/[trackerId]', params: { trackerId: tracker.id } })
+              }
+              accessibilityRole="button"
+              style={{
+                minHeight: 52,
+                minWidth: '30%',
+                flexGrow: 1,
+                borderRadius: radius.lg,
+                borderWidth: 1.5,
+                borderColor: t.border,
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <AppText size={17} weight="600">
+                Other
+              </AppText>
+            </Pressable>
+          </View>
+        </View>
+
+        <View style={{ gap: space.sm }}>
+          <SectionLabel>Last 14 days</SectionLabel>
+          <Bars
+            values={series.map((s) => s.value)}
+            color={tracker.color}
+            goal={goal?.target}
+            highlightLast
+          />
+        </View>
+
+        <GoalsStrip
+          tracker={tracker}
+          goals={goals}
+          views={views}
+          onAdd={openGoalSheet}
+          onOpen={() => openGoalSheet()}
+          suggestMetric={metric}
+        />
+
+        <View style={{ gap: space.sm }}>
+          <SectionLabel>History</SectionLabel>
+          <EntryTimeline tracker={tracker} entries={entries} />
+        </View>
+      </View>
+    );
+  };
+
+  /* -------------------------------------------------------- subjects branch */
+
+  const subjectFld = tracker.fields.find((f) => f.type === 'text' && f.required) ??
+    tracker.fields.find((f) => f.type === 'text');
+  const durationFld = tracker.fields.find((f) => f.type === 'duration');
   const subjectKey = subjectFld?.key ?? 'subject';
   const durationKey = durationFld?.key ?? 'duration';
 
-  const subjects = Array.from(new Set([
-    ...entries.map((e: any) => String(e.data?.[subjectKey] ?? '')).filter(Boolean),
-    ...savedSubjects,
-  ]));
+  const subjects = Array.from(
+    new Set([
+      ...entries.map((e) => String(e.data?.[subjectKey] ?? '')).filter(Boolean),
+      ...savedSubjects,
+    ]),
+  );
 
-  const totalFor = (subject: string) => entries
-    .filter((e: any) => String(e.data?.[subjectKey]) === subject)
-    .reduce((s: number, e: any) => { const n = Number(e.data?.[durationKey]); return s + (Number.isFinite(n) ? n : 0); }, 0);
+  const totalFor = (subject: string) =>
+    entries
+      .filter((e) => String(e.data?.[subjectKey]) === subject)
+      .reduce((sum, e) => {
+        const n = Number(e.data?.[durationKey]);
+        return sum + (Number.isFinite(n) ? n : 0);
+      }, 0);
 
   const startTimer = async (subject: string) => {
     const state = { start: Date.now(), running: true };
-    setTimers((p) => ({ ...p, [subject]: state }));
+    setTimers((prev) => ({ ...prev, [subject]: state }));
     await setSetting(`timer:${tracker.id}:${subject}`, JSON.stringify(state));
   };
 
   const stopTimer = async (subject: string) => {
-    const st = timers[subject];
-    if (!st?.running) return;
-    const elapsedMin = Math.max(1, Math.round((Date.now() - st.start) / 60000));
-    const data: Record<string, unknown> = { ...liveDefaults, [subjectKey]: subject, [durationKey]: elapsedMin };
-    await saveEntry({ trackerId: tracker.id, data, occurredAt: Date.now(), fields });
-    const state = { start: 0, running: false };
-    setTimers((p) => ({ ...p, [subject]: state }));
+    const state = timers[subject];
+    if (!state?.running) return;
+    const elapsedMin = Math.max(1, Math.round((Date.now() - state.start) / 60000));
+    await addEntry({ ...defaults, [subjectKey]: subject, [durationKey]: elapsedMin });
+    setTimers((prev) => ({ ...prev, [subject]: { start: 0, running: false } }));
     await removeSetting(`timer:${tracker.id}:${subject}`);
-    toast.show(`Logged ${elapsedMin} min for ${subject}`);
-    await load();
   };
 
   const addSubject = async () => {
@@ -243,444 +1042,205 @@ export default function TrackerDetail() {
       const next = [...savedSubjects, name];
       setSavedSubjects(next);
       await setSetting(`subjects:${tracker.id}`, JSON.stringify(next));
-      setTimers((p) => ({ ...p, [name]: { start: 0, running: false } }));
+      setTimers((prev) => ({ ...prev, [name]: { start: 0, running: false } }));
     }
-    toast.show(`Added ${name}`);
   };
 
-  const doQuickAdd = async (value: number) => {
-    const data: Record<string, unknown> = { ...liveDefaults, [primaryKey]: value };
-    await saveEntry({ trackerId: tracker.id, data, occurredAt: Date.now(), fields });
-    toast.show(`Added ${value} ${primary?.unit ?? ''}`.trim());
-    await load();
+  const renderSubjects = () => {
+    const weekTotal = entries
+      .filter((e) => e.day >= window7.from && e.day <= today)
+      .reduce((sum, e) => {
+        const n = Number(e.data?.[durationKey]);
+        return sum + (Number.isFinite(n) ? n : 0);
+      }, 0);
+
+    return (
+      <View style={{ gap: space.xl }}>
+        {subjects.length === 0 && Object.keys(timers).length === 0 ? (
+          <AppText size={15} muted>
+            Nothing yet.
+          </AppText>
+        ) : null}
+        {[...new Set([...subjects, ...Object.keys(timers)])].map((subject) => {
+          const state = timers[subject];
+          const running = !!state?.running;
+          const elapsed = running ? Math.floor((now - state.start) / 1000) : 0;
+          const total = totalFor(subject);
+          return (
+            <View key={subject} style={{ gap: space.sm }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
+                <View style={{ flex: 1 }}>
+                  <AppText size={17} weight="600">{subject}</AppText>
+                  <AppText size={13} muted>{`${formatDuration(total)} studied`}</AppText>
+                </View>
+                {running ? (
+                  <View style={{ alignItems: 'center', gap: space.xs }}>
+                    <AppText size={17} weight="600" numeric color={tracker.color}>
+                      {`${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`}
+                    </AppText>
+                    <Button label="Stop" color={tracker.color} onPress={() => stopTimer(subject)} style={{ minHeight: 40 }} />
+                  </View>
+                ) : (
+                  <Button
+                    label="Start"
+                    icon="play"
+                    color={tracker.color}
+                    onPress={() => startTimer(subject)}
+                    style={{ minHeight: 40 }}
+                  />
+                )}
+              </View>
+            </View>
+          );
+        })}
+
+        <View style={{ gap: space.sm }}>
+          <SectionLabel>New subject</SectionLabel>
+          <View style={{ flexDirection: 'row', gap: space.sm }}>
+            <TextInput
+              value={newSubject}
+              onChangeText={setNewSubject}
+              placeholder="Subject name"
+              placeholderTextColor={t.textMuted}
+              style={[styles.input, { borderColor: t.border, color: t.text, backgroundColor: t.surfaceAlt, flex: 1 }]}
+            />
+            <Button label="Start" color={tracker.color} onPress={addSubject} style={{ minHeight: TOUCH }} />
+          </View>
+        </View>
+
+        <AppText size={15} muted>{`This week: ${formatDuration(weekTotal)}`}</AppText>
+
+        <View style={{ gap: space.sm }}>
+          <SectionLabel>History</SectionLabel>
+          <EntryTimeline tracker={tracker} entries={entries} />
+        </View>
+      </View>
+    );
   };
 
-  const doCustomAdd = async () => {
-    const n = Number(customValue);
-    if (!Number.isFinite(n)) { toast.show('Enter a number'); return; }
-    const data: Record<string, unknown> = { ...liveDefaults, [primaryKey]: n };
-    await saveEntry({ trackerId: tracker.id, data, occurredAt: Date.now(), fields });
-    toast.show(`Added ${n} ${primary?.unit ?? ''}`.trim());
-    setCustomOpen(false);
-    setCustomValue('');
-    await load();
-  };
-
-  const onSetShowOnToday = async (next: boolean) => {
-    await updateTracker(tracker.id, { show_on_dashboard: next ? 1 : 0 });
-    await load();
-  };
-
-  const onLayoutChange = async (key: string) => {
-    await updateTracker(tracker.id, { config: { ...tracker.config, presentation: key as any } });
-    await load();
-  };
-
-  const onPause = async () => {
-    await updateTracker(tracker.id, { status: 'paused' });
-    toast.show('Paused');
-    await load();
-  };
-
-  const onArchive = () => {
-    Alert.alert('Archive this Space?', 'It disappears from Today and stops reminders. All history is kept and you can restore it any time.', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Archive', onPress: async () => { await updateTracker(tracker.id, { status: 'archived' }); router.back(); } },
-    ]);
-  };
-
-  const onDelete = () => {
-    Alert.alert('Delete permanently?', `This erases "${tracker.name}" and all ${entries.length} of its entries. This cannot be undone. Archive it instead if you might want it later.`, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete forever', style: 'destructive', onPress: async () => { await deleteTracker(tracker.id); router.back(); } },
-    ]);
-  };
-
-  const formatTime = (ms: number) => {
-    const d = new Date(ms);
-    return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-  };
-
-  const unit = primary?.unit ?? '';
+  const body =
+    presentation === 'check'
+      ? renderCheck()
+      : presentation === 'count'
+        ? renderCount()
+        : presentation === 'quantity'
+          ? renderQuantity()
+          : presentation === 'rating'
+            ? renderRating()
+            : presentation === 'session'
+              ? renderSession()
+              : presentation === 'subjects'
+                ? renderSubjects()
+                : renderLog();
 
   return (
     <Screen padBottom={64}>
-      <ScreenHeader
-        title={tracker.name}
-        onBack={() => router.back()}
-        right={
-          <Pressable onPress={() => toast.show('Edit coming soon')} accessibilityLabel="Edit" style={{ width: TOUCH, height: TOUCH, alignItems: 'center', justifyContent: 'center' }}>
-            <Ionicons name="create-outline" size={22} color={t.text} />
-          </Pressable>
-        }
-      />
-
-      {presentation === 'check' ? (
-        <>
-          <View style={{ alignItems: 'center', paddingVertical: space.lg }}>
-            <Pressable
-              onPress={async () => {
-                if (todays.length > 0) {
-                  await deleteEntry(todays[0].id);
-                  toast.show('Undone');
-                } else {
-                  const data: Record<string, unknown> = { ...liveDefaults, [primaryKey]: true };
-                  await saveEntry({ trackerId: tracker.id, data, occurredAt: Date.now(), fields });
-                  toast.show('Done');
-                }
-                await load();
-              }}
-              style={{
-                width: 160, height: 160, borderRadius: 80,
-                alignItems: 'center', justifyContent: 'center',
-                backgroundColor: todays.length > 0 ? tracker.color : t.surfaceAlt,
-                borderWidth: 3, borderColor: tracker.color,
-              }}
-            >
-              <Ionicons name={todays.length > 0 ? 'checkmark' : 'ellipse-outline'} size={64} color={todays.length > 0 ? '#fff' : tracker.color} />
-              <AppText size={14} weight="700" color={todays.length > 0 ? '#fff' : t.text} style={{ marginTop: 4 }}>
-                {todays.length > 0 ? 'Done' : 'Tap to complete'}
-              </AppText>
-            </Pressable>
-            <AppText size={13} muted style={{ marginTop: space.md }}>
-              {todays.length > 0 ? 'Completed today' : 'Not completed today'}
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
+        <Pressable
+          onPress={() => router.back()}
+          accessibilityLabel="Go back"
+          style={{
+            width: TOUCH,
+            height: TOUCH,
+            alignItems: 'center',
+            justifyContent: 'center',
+            marginLeft: -space.md,
+          }}
+        >
+          <Ionicons name="arrow-back" size={24} color={t.text} />
+        </Pressable>
+        <View style={{ flex: 1 }}>
+          <AppText size={24} weight="600" numberOfLines={1}>
+            {tracker.name}
+          </AppText>
+          {tracker.description ? (
+            <AppText size={13} weight="500" muted numberOfLines={1}>
+              {tracker.description}
             </AppText>
-            <AppText size={13} weight="600" color={tracker.color} style={{ marginTop: space.xs }}>
-              {streak} day streak
-            </AppText>
-          </View>
-
-          <Card style={{ gap: space.sm }}>
-            <AppText size={13} weight="700" muted>This week</AppText>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-              {weekValues.map((w) => {
-                const done = entries.some((e: any) => e.day === w.day);
-                return (
-                  <View key={w.day} style={{ alignItems: 'center', gap: 4 }}>
-                    <View style={{ width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center', backgroundColor: done ? tracker.color : t.surfaceAlt }}>
-                      {done ? <Ionicons name="checkmark" size={18} color="#fff" /> : null}
-                    </View>
-                    <AppText size={10} muted>{['S','M','T','W','T','F','S'][new Date(w.day).getDay()]}</AppText>
-                  </View>
-                );
-              })}
-            </View>
-          </Card>
-
-          <Card style={{ gap: space.sm }}>
-            <AppText size={13} weight="700" muted>History</AppText>
-            {entries.length === 0 ? (
-              <AppText size={14} muted>No completions yet.</AppText>
-            ) : (
-              entries.slice(0, 20).map((e: any) => (
-                <View key={e.id} style={styles.todayRow}>
-                  <AppText size={13} muted style={{ width: 120 }}>{new Date(e.occurred_at).toLocaleDateString()}</AppText>
-                  <AppText size={15} style={{ flex: 1 }}>Completed</AppText>
-                </View>
-              ))
-            )}
-          </Card>
-        </>
-      ) : presentation === 'subjects' ? (
-        <>
-          {subjects.length === 0 && Object.keys(timers).length === 0 ? (
-            <Card><AppText muted>No subjects yet. Add one below.</AppText></Card>
           ) : null}
-          {[...new Set([...subjects, ...Object.keys(timers)])].map((subject) => {
-            const st = timers[subject];
-            const running = !!st?.running;
-            const elapsed = running ? Math.floor((now - st.start) / 1000) : 0;
-            const total = totalFor(subject);
-            return (
-              <Card key={subject} style={{ gap: space.sm }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
-                  <IconBadge icon={tracker.icon} color={tracker.color} size={40} />
-                  <View style={{ flex: 1 }}>
-                    <AppText size={16} weight="700">{subject}</AppText>
-                    <AppText size={13} muted>{total} min studied</AppText>
-                  </View>
-                  {running ? (
-                    <View style={{ alignItems: 'center' }}>
-                      <AppText size={13} numeric weight="600" color={tracker.color}>{Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, '0')}</AppText>
-                      <Button label="Stop" variant="primary" color={tracker.color} onPress={() => stopTimer(subject)} style={{ minHeight: 40 }} />
-                    </View>
-                  ) : (
-                    <Button label="Start" variant="primary" color={tracker.color} icon="play" onPress={() => startTimer(subject)} style={{ minHeight: 40 }} />
-                  )}
-                </View>
-              </Card>
-            );
-          })}
+        </View>
+        <Pressable
+          onPress={() => toast.show('Edit coming soon')}
+          accessibilityLabel="Edit this Space"
+          style={{
+            width: TOUCH,
+            height: TOUCH,
+            alignItems: 'center',
+            justifyContent: 'center',
+            marginRight: -space.md,
+          }}
+        >
+          <Ionicons name="create-outline" size={24} color={t.text} />
+        </Pressable>
+      </View>
 
-          <Card style={{ gap: space.sm }}>
-            <AppText size={13} weight="700" muted>Add a subject</AppText>
-            <View style={{ flexDirection: 'row', gap: space.sm }}>
-              <TextInput
-                value={newSubject}
-                onChangeText={setNewSubject}
-                placeholder="Subject name"
-                placeholderTextColor={t.textMuted}
-                style={[styles.input, { borderColor: t.border, color: t.text, backgroundColor: t.surfaceAlt, flex: 1 }]}
-              />
-              <Button label="Add" onPress={addSubject} style={{ minHeight: TOUCH }} />
-            </View>
-          </Card>
+      {!active ? (
+        <View style={{ gap: space.sm, paddingVertical: space.sm }}>
+          <AppText size={13} weight="500" color={t.warning}>
+            {`${tracker.status === 'paused' ? 'Paused' : 'Archived'}. Your history is kept.`}
+          </AppText>
+          <Button
+            label={tracker.status === 'paused' ? 'Resume tracking' : 'Restore'}
+            icon="play"
+            color={tracker.color}
+            onPress={onResume}
+          />
+        </View>
+      ) : null}
 
-          <Card style={{ gap: space.sm }}>
-            <AppText size={13} weight="700" muted>History</AppText>
-            {entries.length === 0 ? (
-              <AppText size={14} muted>No sessions yet.</AppText>
-            ) : (
-              entries.slice(0, 20).map((e: any) => (
-                <View key={e.id} style={styles.todayRow}>
-                  <AppText size={13} muted numeric style={{ width: 90 }}>{new Date(e.occurred_at).toLocaleDateString()}</AppText>
-                  <AppText size={15} style={{ flex: 1 }}>{e.data?.[subjectKey]}</AppText>
-                  <AppText size={15} numeric>{e.data?.[durationKey]} min</AppText>
-                </View>
-              ))
-            )}
-          </Card>
-        </>
-      ) : presentation === 'log' ? (
-        <>
-          <Button label={`+ Log ${tracker.name}`} icon="add" color={tracker.color} onPress={() => setCustomOpen(true)} />
-          <Card style={{ gap: space.sm }}>
-            <AppText size={13} weight="700" muted>Today · {todays.length} entries</AppText>
-            {todays.length === 0 ? (
-              <AppText size={14} muted>Nothing logged today.</AppText>
-            ) : (
-              todays.map((e: any) => (
-                <View key={e.id} style={styles.todayRow}>
-                  <AppText size={13} muted numeric style={{ width: 70 }}>{new Date(e.occurred_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}</AppText>
-                  <View style={{ flex: 1 }}>
-                    <AppText size={15} weight="600">{String(e.data?.[fields.find(f=>f.type==='select')?.key ?? 'meal'] ?? '')}</AppText>
-                    <AppText size={13} muted numberOfLines={1}>{String(e.data?.[primaryKey] ?? e.data?.[fields.find(f=>f.type==='text')?.key ?? 'what'] ?? '')}</AppText>
-                  </View>
-                  <Pressable onPress={() => deleteEntry(e.id).then(load)} accessibilityLabel="Remove" style={{ paddingHorizontal: space.sm }}>
-                    <AppText size={13} muted>Remove</AppText>
-                  </Pressable>
-                </View>
-              ))
-            )}
-          </Card>
-          <Card style={{ gap: space.sm }}>
-            <AppText size={13} weight="700" muted>History</AppText>
-            {entries.length === 0 ? (
-              <AppText size={14} muted>No entries yet.</AppText>
-            ) : (
-              entries.slice(0, 20).map((e: any) => (
-                <View key={e.id} style={styles.todayRow}>
-                  <AppText size={12} muted style={{ width: 90 }}>{new Date(e.occurred_at).toLocaleDateString()}</AppText>
-                  <AppText size={14} style={{ flex: 1 }} numberOfLines={1}>{String(e.data?.[fields.find(f=>f.type==='text')?.key ?? 'what'] ?? '')}</AppText>
-                </View>
-              ))
-            )}
-          </Card>
-        </>
-      ) : presentation === 'rating' ? (
-        <>
-          <Card style={{ gap: space.md, alignItems: 'center' }}>
-            <AppText size={13} weight="700" muted>Today's rating</AppText>
-            <View style={{ flexDirection: 'row', gap: space.sm }}>
-              {[1,2,3,4,5].map((star) => {
-                const current = todays.length > 0 ? Number(todays[0].data?.[primaryKey]) : 0;
-                return (
-                  <Pressable key={star} onPress={async () => {
-                    const data: Record<string, unknown> = { ...liveDefaults, [primaryKey]: star };
-                    if (todays.length > 0) await deleteEntry(todays[0].id);
-                    await saveEntry({ trackerId: tracker.id, data, occurredAt: Date.now(), fields });
-                    toast.show(`Rated ${star}`);
-                    await load();
-                  }}>
-                    <Ionicons name={star <= current ? 'star' : 'star-outline'} size={36} color="#F59E0B" />
-                  </Pressable>
-                );
-              })}
-            </View>
-            {todays.length > 0 ? <AppText size={13} muted>Rated {todays[0].data?.[primaryKey]} today</AppText> : <AppText size={13} muted>Tap a star</AppText>}
-          </Card>
-          <Card style={{ gap: space.sm }}>
-            <AppText size={13} weight="700" muted>History</AppText>
-            {entries.length === 0 ? (
-              <AppText size={14} muted>No ratings yet.</AppText>
-            ) : (
-              entries.slice(0, 20).map((e: any) => (
-                <View key={e.id} style={styles.todayRow}>
-                  <AppText size={12} muted style={{ width: 90 }}>{new Date(e.occurred_at).toLocaleDateString()}</AppText>
-                  <View style={{ flex: 1, flexDirection: 'row', gap: 2 }}>
-                    {[1,2,3,4,5].map((star) => (
-                      <Ionicons key={star} name={star <= Number(e.data?.[primaryKey]) ? 'star' : 'star-outline'} size={14} color="#F59E0B" />
-                    ))}
-                  </View>
-                </View>
-              ))
-            )}
-          </Card>
-        </>
-      ) : presentation === 'session' ? (
-        <>
-          <View style={{ alignItems: 'center', paddingVertical: space.lg }}>
-            <AppText size={48} weight="700" numeric>{sessionElapsed > 0 ? `${Math.floor(sessionElapsed/60)}:${String(sessionElapsed%60).padStart(2,'0')}` : `${todayTotal} min`}</AppText>
-            <AppText size={13} muted style={{ marginTop: space.xs }}>{sessionRunning ? 'Running…' : 'Today total'}</AppText>
-            <View style={{ flexDirection: 'row', gap: space.sm, marginTop: space.lg }}>
-              {sessionRunning ? (
-                <Button label="Stop" variant="primary" color={tracker.color} icon="stop" onPress={stopSession} style={{ minWidth: 120 }} />
-              ) : (
-                <Button label="Start" variant="primary" color={tracker.color} icon="play" onPress={startSession} style={{ minWidth: 120 }} />
-              )}
-            </View>
-          </View>
-          <Card style={{ gap: space.sm }}>
-            <AppText size={13} weight="700" muted>Today · {todays.length} sessions · {todayTotal} min</AppText>
-            {todays.length === 0 ? (
-              <AppText size={14} muted>No sessions yet.</AppText>
-            ) : (
-              todays.map((e: any) => (
-                <View key={e.id} style={styles.todayRow}>
-                  <AppText size={13} muted numeric style={{ width: 70 }}>{new Date(e.occurred_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}</AppText>
-                  <AppText size={15} style={{ flex: 1 }} numeric>{e.data?.[primaryKey]} min</AppText>
-                  <Pressable onPress={() => deleteEntry(e.id).then(load)} style={{ paddingHorizontal: space.sm }}>
-                    <AppText size={13} muted>Remove</AppText>
-                  </Pressable>
-                </View>
-              ))
-            )}
-          </Card>
-        </>
-      ) : presentation === 'count' ? (
-        <>
-          <View style={{ alignItems: 'center', paddingVertical: space.lg }}>
-            <AppText size={64} weight="700" numeric>{todayTotal}</AppText>
-            <AppText size={13} muted style={{ marginTop: space.xs }}>today</AppText>
-            <Pressable onPress={async () => {
-              const data: Record<string, unknown> = { ...liveDefaults, [primaryKey]: (todays.length > 0 ? (todays[todays.length-1].data?.[primaryKey] ?? 0) + 1 : 1) };
-              await saveEntry({ trackerId: tracker.id, data, occurredAt: Date.now(), fields });
-              toast.show('+1');
-              await load();
-            }} style={{ width: 120, height: 120, borderRadius: 60, backgroundColor: tracker.color, alignItems: 'center', justifyContent: 'center', marginTop: space.lg }}>
-              <Ionicons name="add" size={48} color="#fff" />
-            </Pressable>
-          </View>
-          <Card style={{ gap: space.sm }}>
-            <AppText size={13} weight="700" muted>History</AppText>
-            {entries.length === 0 ? (
-              <AppText size={14} muted>No entries yet.</AppText>
-            ) : (
-              entries.slice(0, 20).map((e: any) => (
-                <View key={e.id} style={styles.todayRow}>
-                  <AppText size={12} muted style={{ width: 90 }}>{new Date(e.occurred_at).toLocaleDateString()}</AppText>
-                  <AppText size={15} style={{ flex: 1 }} numeric>{e.data?.[primaryKey]}</AppText>
-                  <Pressable onPress={() => deleteEntry(e.id).then(load)} style={{ paddingHorizontal: space.sm }}>
-                    <AppText size={13} muted>Remove</AppText>
-                  </Pressable>
-                </View>
-              ))
-            )}
-          </Card>
-        </>
-      ) : presentation === 'quantity' ? (
-        <>
-          <View style={{ alignItems: 'center', paddingVertical: space.lg }}>
-            <Ring size={216} stroke={16} progress={goalProgress || (goalTarget ? todayTotal / Math.max(goalTarget, 1) : todayTotal > 0 ? 1 : 0)} color={tracker.color} trackColor={t.surfaceAlt}>
-              <View style={{ alignItems: 'center' }}>
-                <AppText size={34} weight="700" numeric>{todayTotal}{unit ? ` ${unit}` : ''}</AppText>
-                <AppText size={13} muted>{goalTarget > 0 ? `of ${goalTarget} ${unit} today` : 'today'}</AppText>
-              </View>
-            </Ring>
-          </View>
+      {body}
 
-          <View style={{ flexDirection: 'row', gap: space.sm, flexWrap: 'wrap' }}>
-            {quickValues.map((v: number) => (
-              <Pressable key={v} onPress={() => doQuickAdd(v)} style={[styles.quickBtn, { backgroundColor: tracker.color }]}>
-                <AppText size={15} weight="700" color="#fff">{`+${v} ${unit}`}</AppText>
-              </Pressable>
-            ))}
-            <Pressable onPress={() => setCustomOpen(true)} style={[styles.quickBtn, { backgroundColor: 'transparent', borderWidth: 1.5, borderColor: t.border }]}>
-              <AppText size={15} weight="700">Other</AppText>
-            </Pressable>
-          </View>
+      {schedule ? (
+        <View style={{ gap: space.xs }}>
+          <AppText size={13} weight="500" muted>
+            {`Reminders${active ? '' : ' (off while not active)'}`}
+          </AppText>
+          <AppText size={15}>{describeScheduleRow(schedule)}</AppText>
+        </View>
+      ) : null}
 
-          <Card style={{ gap: space.sm }}>
-            <AppText size={13} weight="700" muted>Today</AppText>
-            {todays.length === 0 ? (
-              <AppText size={14} muted>Nothing yet today.</AppText>
-            ) : (
-              todays.map((e: any) => (
-                <View key={e.id} style={styles.todayRow}>
-                  <AppText size={13} muted numeric style={{ width: 70 }}>{formatTime(e.occurred_at)}</AppText>
-                  <Pressable style={{ flex: 1, minHeight: TOUCH, justifyContent: 'center' }} onPress={() => router.push({ pathname: '/entry/[trackerId]', params: { trackerId: tracker.id, entryId: e.id } })}>
-                    <AppText size={15} numeric>{e.data?.[primaryKey]} {unit}</AppText>
-                  </Pressable>
-                  <Pressable onPress={() => { /* remove */ }} accessibilityLabel="Remove this entry" style={{ minHeight: TOUCH, justifyContent: 'center', paddingHorizontal: space.sm }}>
-                    <AppText size={13} muted>Remove</AppText>
-                  </Pressable>
-                </View>
-              ))
-            )}
-          </Card>
-
-          <Card style={{ gap: space.sm }}>
-            <AppText size={13} weight="700" muted>This week</AppText>
-            <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: 6, height: 80 }}>
-              {weekValues.map((w, i) => {
-                const h = weekMax > 0 ? (w.value / weekMax) * 70 : 0;
-                const isToday = w.day === today;
-                return (
-                  <View key={w.day} style={{ flex: 1, alignItems: 'center', gap: 4 }}>
-                    <View style={{ width: '100%', height: Math.max(4, h), borderRadius: 4, backgroundColor: isToday ? tracker.color : `${tracker.color}66` }} />
-                    <AppText size={10} muted>{['S','M','T','W','T','F','S'][new Date(w.day).getDay()]}</AppText>
-                  </View>
-                );
-              })}
-            </View>
-          </Card>
-
-          <Card style={{ gap: space.sm }}>
-            <AppText size={13} weight="700" muted>Goals</AppText>
-            {goal ? (
-              <>
-                <AppText size={14} weight="600">{(goal as any).title || `${tracker.name}: at least ${goal.target} ${goal.unit} per ${goal.period}`}</AppText>
-                <AppText size={13} muted>{todayTotal} of {goalTarget} {unit} today</AppText>
-                <ProgressBar value={goalProgress} color={tracker.color} />
-                <Pressable onPress={() => { setGoalInput(String(goalTarget || '')); setGoalOpen(true); }}><AppText size={13} weight="700" color={tracker.color}>Add another goal</AppText></Pressable>
-              </>
-            ) : (
-              <Pressable onPress={() => { setGoalInput(String(goalTarget || '')); setGoalOpen(true); }}><AppText size={13} weight="700" color={tracker.color}>Set a goal (optional)</AppText></Pressable>
-            )}
-          </Card>
-        </>
-      ) : (
-        <Card><AppText muted>Full log view coming soon.</AppText></Card>
-      )}
-
-      {/* Shared footer */}
-      <View style={{ gap: space.sm, marginTop: space.md }}>
-        <AppText size={13} weight="700" muted>{`Manage · ${scheduleSummary}`}</AppText>
+      <View style={{ gap: space.sm, marginTop: space.lg }}>
+        <AppText size={13} weight="500" muted>
+          {`Manage · ${describeTrackerSchedule(tracker)}`}
+        </AppText>
         <SwitchRow label="Show on Today" value={!!tracker.show_on_dashboard} onChange={onSetShowOnToday} />
-        <AppText size={13} weight="700" muted>Layout</AppText>
+        <AppText size={13} weight="500" muted>
+          Layout
+        </AppText>
         <ChipRow>
-          {PRESENTATIONS.map((pr) => (
-            <Chip key={pr.key} label={pr.label} selected={presentation === pr.key} onPress={() => onLayoutChange(pr.key)} />
+          {PRESENTATIONS.map((item) => (
+            <Chip
+              key={item.key}
+              label={item.label}
+              selected={presentation === item.key}
+              onPress={() => onLayoutChange(item.key)}
+            />
           ))}
         </ChipRow>
         <AppText size={12} muted>
-          {`${PRESENTATIONS.find((p) => p.key === presentation)?.blurb ?? ''}. The app picked this from your fields; change it any time.`}
+          {`${PRESENTATIONS.find((item) => item.key === presentation)?.blurb ?? ''}. The app picked this from your fields; change it any time.`}
         </AppText>
-        {tracker.status !== 'paused' ? (
-          <Button label="Pause tracking" variant="secondary" icon="pause" onPress={onPause} />
-        ) : (
-          <Button label="Resume tracking" variant="secondary" icon="play" onPress={async () => { await updateTracker(tracker.id, { status: 'active' }); await load(); }} />
-        )}
-        {tracker.status !== 'archived' ? (
-          <Button label="Archive" variant="secondary" icon="archive-outline" onPress={onArchive} />
+        {active ? (
+          <Button label="Pause tracking" icon="pause" variant="secondary" onPress={onPause} />
         ) : null}
-        <Button label="Delete permanently" variant="ghost" icon="trash-outline" color={t.danger} onPress={onDelete} />
+        {tracker.status !== 'archived' ? (
+          <Button label="Archive" icon="archive-outline" variant="secondary" onPress={onArchive} />
+        ) : null}
+        <Button
+          label="Delete permanently"
+          icon="trash-outline"
+          variant="ghost"
+          color={t.danger}
+          onPress={onDelete}
+        />
       </View>
 
       <Modal visible={goalOpen} transparent animationType="fade" onRequestClose={() => setGoalOpen(false)}>
         <Pressable style={styles.modalBackdrop} onPress={() => setGoalOpen(false)}>
           <Pressable style={[styles.modalCard, { backgroundColor: t.surface }]} onPress={() => {}}>
-            <AppText size={17} weight="700">Set a daily goal</AppText>
+            <AppText size={17} weight="700">
+              Set a daily goal
+            </AppText>
             <TextInput
               value={goalInput}
               onChangeText={setGoalInput}
@@ -692,28 +1252,18 @@ export default function TrackerDetail() {
             />
             <View style={{ flexDirection: 'row', gap: space.sm }}>
               <Button label="Cancel" variant="secondary" onPress={() => setGoalOpen(false)} style={{ flex: 1 }} />
-              <Button label="Save" onPress={async () => {
-                const n = Number(goalInput);
-                if (!Number.isFinite(n) || n <= 0) { toast.show('Enter a positive number'); return; }
-                const d = makeDriver();
-                await d.runAsync('DELETE FROM goals WHERE space_key = ?', [`tracker:${tracker.id}`]);
-                await d.runAsync(
-                  `INSERT INTO goals (id, title, space_key, kind, metric, target, unit, period, status, created_at, updated_at) VALUES (?, ?, ?, 'target', 'sum', ?, ?, 'day', 'active', ?, ?)`,
-                  [newId('goal'), `${tracker.name}: at least ${n} ${unit} per day`, `tracker:${tracker.id}`, n, unit, Date.now(), Date.now()],
-                );
-                await updateTracker(tracker.id, { config: { ...tracker.config, goal: { metric: 'sum', target: n, unit, period: 'day' } } });
-                setGoalOpen(false);
-                toast.show('Goal saved');
-                await load();
-              }} style={{ flex: 1 }} />
+              <Button label="Save" onPress={saveGoal} style={{ flex: 1 }} />
             </View>
           </Pressable>
         </Pressable>
       </Modal>
+
       <Modal visible={customOpen} transparent animationType="fade" onRequestClose={() => setCustomOpen(false)}>
         <Pressable style={styles.modalBackdrop} onPress={() => setCustomOpen(false)}>
           <Pressable style={[styles.modalCard, { backgroundColor: t.surface }]} onPress={() => {}}>
-            <AppText size={17} weight="700">Custom amount</AppText>
+            <AppText size={17} weight="700">
+              Custom amount
+            </AppText>
             <TextInput
               value={customValue}
               onChangeText={setCustomValue}
@@ -725,7 +1275,7 @@ export default function TrackerDetail() {
             />
             <View style={{ flexDirection: 'row', gap: space.sm }}>
               <Button label="Cancel" variant="secondary" onPress={() => setCustomOpen(false)} style={{ flex: 1 }} />
-              <Button label="Add" onPress={doCustomAdd} style={{ flex: 1 }} />
+              <Button label="Add" onPress={addCustom} style={{ flex: 1 }} />
             </View>
           </Pressable>
         </Pressable>
@@ -735,21 +1285,6 @@ export default function TrackerDetail() {
 }
 
 const styles = StyleSheet.create({
-  quickBtn: {
-    flex: 1,
-    minWidth: 90,
-    minHeight: 60,
-    borderRadius: radius.lg,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: space.sm,
-  },
-  todayRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#2A2C33',
-  },
   modalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.5)',
