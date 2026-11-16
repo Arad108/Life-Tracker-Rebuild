@@ -1260,7 +1260,7 @@ export default function TrackerDetail() {
       <Modal visible={goalOpen} transparent animationType="fade" onRequestClose={() => setGoalOpen(false)}>
         <Pressable style={styles.modalBackdrop} onPress={() => setGoalOpen(false)}>
           <Pressable style={[styles.modalCard, { backgroundColor: t.surface, maxHeight: '92%' }]} onPress={() => {}}>
-            <ScrollView style={{ maxHeight: 750 }}>
+            <ScrollView style={{ maxHeight: 1100 }}>
               <View style={{ gap: space.md }}>
                 <AppText size={17} weight="700">
                   New goal
