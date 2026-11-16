@@ -44,7 +44,7 @@ export default function RootLayout() {
       <Stack screenOptions={{ headerShown: true }}>
         <Stack.Screen name="tracker/new" options={{ headerShown: false }} />
         <Stack.Screen name="tracker/[id]" options={{ headerShown: false }} />
-        <Stack.Screen name="entry/[trackerId]" options={{ headerShown: false }} />
+        <Stack.Screen name="tracker/edit" options={{ headerShown: false }} />
       </Stack>
     </ToastProvider>
   );

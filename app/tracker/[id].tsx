@@ -1219,7 +1219,7 @@ export default function TrackerDetail() {
           ) : null}
         </View>
         <Pressable
-          onPress={() => toast.show('Edit coming soon')}
+          onPress={() => router.push({ pathname: '/tracker/edit', params: { id: tracker.id } })}
           accessibilityLabel="Edit this Space"
           style={{
             width: TOUCH,
