@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { ScrollView, Text, View, Pressable, TextInput, Alert } from 'react-native';
+import { ScrollView, Text, View, Pressable, TextInput, Modal, Alert } from 'react-native';
 import { makeDriver } from '../src/db';
 import { Screen, AppText, Button, Card } from '../src/ui/components';
 import { useTheme, space, radius, TOUCH } from '../src/ui/theme';
@@ -50,6 +50,14 @@ const INTERACTION_KINDS = ['talked', 'met', 'called', 'texted', 'video'];
 export default function Social() {
   const t = useTheme();
   const [people, setPeople] = useState<Person[]>([]);
+  const [search, setSearch] = useState('');
+  const [personSheetOpen, setPersonSheetOpen] = useState(false);
+  const [editingPerson, setEditingPerson] = useState<Person | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editCircle, setEditCircle] = useState('Friends');
+  const [editMetContext, setEditMetContext] = useState('');
+  const [editCadence, setEditCadence] = useState('');
+  const [editNotes, setEditNotes] = useState('');
   const [selectedPerson, setSelectedPerson] = useState<Person | null>(null);
   const [facts, setFacts] = useState<Fact[]>([]);
   const [interactions, setInteractions] = useState<Interaction[]>([]);
@@ -76,6 +84,52 @@ export default function Social() {
   const loadPeople = async () => {
     const d = makeDriver();
     setPeople(await d.getAllAsync<Person>('SELECT * FROM so_people ORDER BY name'));
+  };
+
+  const filteredPeople = people.filter((p) =>
+    p.name.toLowerCase().includes(search.toLowerCase()) ||
+    p.circle.toLowerCase().includes(search.toLowerCase()) ||
+    p.met_context.toLowerCase().includes(search.toLowerCase()),
+  );
+
+  const openPersonSheet = (person?: Person) => {
+    if (person) {
+      setEditingPerson(person);
+      setEditName(person.name);
+      setEditCircle(person.circle);
+      setEditMetContext(person.met_context);
+      setEditCadence(person.cadence_days ? String(person.cadence_days) : '');
+      setEditNotes('');
+    } else {
+      setEditingPerson(null);
+      setEditName('');
+      setEditCircle('Friends');
+      setEditMetContext('');
+      setEditCadence('');
+      setEditNotes('');
+    }
+    setPersonSheetOpen(true);
+  };
+
+  const savePersonSheet = async () => {
+    if (!editName.trim()) return;
+    const d = makeDriver();
+    const now = Date.now();
+    const cadence = editCadence.trim() ? Number(editCadence) : null;
+    if (editingPerson) {
+      await d.runAsync(
+        'UPDATE so_people SET name = ?, circle = ?, met_context = ?, cadence_days = ?, updated_at = ? WHERE id = ?',
+        [editName.trim(), editCircle, editMetContext.trim(), cadence, now, editingPerson.id],
+      );
+    } else {
+      const id = now.toString();
+      await d.runAsync(
+        'INSERT INTO so_people (id, name, circle, met_context, photo_uri, cadence_days, extra, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?)',
+        [id, editName.trim(), editCircle, editMetContext.trim(), cadence, '{}', now, now],
+      );
+    }
+    setPersonSheetOpen(false);
+    await loadPeople();
   };
 
   const loadPersonDetail = async (person: Person) => {
@@ -245,23 +299,32 @@ export default function Social() {
   return (
     <ScrollView style={{ flex: 1, padding: 16 }}>
       <Text style={{ fontSize: 22, fontWeight: '700', marginBottom: 12 }}>Social</Text>
-      <TextInput placeholder="Name" value={name} onChangeText={setName} style={{ borderWidth: 1, borderColor: '#E3E1DB', borderRadius: 8, padding: 8 }} />
-      <View style={{ flexDirection: 'row', gap: 8, marginTop: 4 }}>
-        <TextInput placeholder="Circle" value={circle} onChangeText={setCircle} style={{ borderWidth: 1, borderColor: '#E3E1DB', borderRadius: 8, padding: 8, flex: 1 }} />
-        <TextInput placeholder="How we met" value={metContext} onChangeText={setMetContext} style={{ borderWidth: 1, borderColor: '#E3E1DB', borderRadius: 8, padding: 8, flex: 1 }} />
-      </View>
-      <Pressable onPress={addPerson} style={{ marginTop: 8, padding: 10, backgroundColor: '#4F46E5', borderRadius: 8 }}>
-        <Text style={{ color: '#fff', textAlign: 'center' }}>Add person</Text>
+      <TextInput
+        placeholder="Search people..."
+        value={search}
+        onChangeText={setSearch}
+        style={{ borderWidth: 1, borderColor: '#E3E1DB', borderRadius: 8, padding: 8, marginBottom: 8 }}
+      />
+      <Pressable onPress={() => openPersonSheet()} style={{ marginBottom: 12, padding: 10, backgroundColor: '#4F46E5', borderRadius: 8 }}>
+        <Text style={{ color: '#fff', textAlign: 'center' }}>+ Add person</Text>
       </Pressable>
-      {people.map((p) => (
+      {filteredPeople.map((p) => (
         <View key={p.id} style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: 1, borderColor: '#EFEDE8' }}>
           <Pressable onPress={() => loadPersonDetail(p)} style={{ flex: 1 }}>
             <Text style={{ fontWeight: '600' }}>{p.name}</Text>
-            <Text style={{ color: '#6B6B6B', fontSize: 12 }}>{p.circle}{p.met_context ? ` · ${p.met_context}` : ''}</Text>
+            <Text style={{ color: '#6B6B6B', fontSize: 12 }}>
+              {p.circle}{p.met_context ? ` · ${p.met_context}` : ''}{p.cadence_days ? ` · every ${p.cadence_days}d` : ''}
+            </Text>
           </Pressable>
-          <Pressable onPress={() => deletePerson(p.id)}><Text style={{ color: '#DC2626' }}>Delete</Text></Pressable>
+          <View style={{ flexDirection: 'row', gap: 12 }}>
+            <Pressable onPress={() => openPersonSheet(p)}><Text style={{ color: '#4F46E5' }}>Edit</Text></Pressable>
+            <Pressable onPress={() => deletePerson(p.id)}><Text style={{ color: '#DC2626' }}>Delete</Text></Pressable>
+          </View>
         </View>
       ))}
+      {filteredPeople.length === 0 ? (
+        <Text style={{ color: '#6B6B6B', marginTop: 12, textAlign: 'center' }}>No people found.</Text>
+      ) : null}
     </ScrollView>
   );
 }
