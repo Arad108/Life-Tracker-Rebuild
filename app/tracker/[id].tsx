@@ -1393,18 +1393,17 @@ export default function TrackerDetail() {
                     style={[styles.input, { borderColor: t.border, color: t.text, backgroundColor: t.surfaceAlt, minHeight: 80 }]}
                   />
                 </View>
-
-                <View style={{ flexDirection: 'row', gap: space.sm }}>
-                  <Button label="Cancel" variant="secondary" onPress={() => setGoalOpen(false)} style={{ flex: 1 }} />
-                  <Button label="Save goal" onPress={saveGoal} style={{ flex: 1 }} />
-                </View>
               </View>
             </ScrollView>
+            <View style={{ flexDirection: 'row', gap: space.sm, paddingTop: space.sm }}>
+              <Button label="Cancel" variant="secondary" onPress={() => setGoalOpen(false)} style={{ flex: 1 }} />
+              <Button label="Save goal" onPress={saveGoal} style={{ flex: 1 }} />
+            </View>
           </Pressable>
         </Pressable>
       </Modal>
 
-      <Modal visible={customOpen} transparent animationType="fade" onRequestClose={() => setCustomOpen(false)}>
+<Modal visible={customOpen} transparent animationType="fade" onRequestClose={() => setCustomOpen(false)}>
         <Pressable style={styles.modalBackdrop} onPress={() => setCustomOpen(false)}>
           <Pressable style={[styles.modalCard, { backgroundColor: t.surface }]} onPress={() => {}}>
             <AppText size={17} weight="700">
