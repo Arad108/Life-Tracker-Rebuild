@@ -86,12 +86,20 @@ export default function TrackerDetail() {
     setGoals(g || []);
     const sch = await getScheduleForTracker(tr.id);
     setScheduleSummary(sch ? sch.kind : 'No set frequency');
+    const subjRaw = await getSetting(`subjects:${tr.id}`);
+    if (subjRaw) {
+      try {
+        const parsed = JSON.parse(subjRaw);
+        if (Array.isArray(parsed)) setSavedSubjects(parsed.filter((x: unknown) => typeof x === 'string'));
+      } catch {}
+    }
     setLoading(false);
   }, [id]);
 
   useEffect(() => { load(); }, [load]);
 
   const [newSubject, setNewSubject] = useState('');
+  const [savedSubjects, setSavedSubjects] = useState<string[]>([]);
   const [timers, setTimers] = useState<Record<string, { start: number; running: boolean }>>({});
   const [now, setNow] = useState(Date.now());
   const [sessionRunning, setSessionRunning] = useState(false);
@@ -106,7 +114,10 @@ export default function TrackerDetail() {
 
   useEffect(() => {
     if (!tracker) return;
-    const subs = Array.from(new Set(entries.map((e: any) => String(e.data?.[(tracker.config.titleFieldKey ?? 'subject')] ?? '')).filter(Boolean)));
+    const subs = Array.from(new Set([
+      ...entries.map((e: any) => String(e.data?.[(tracker.config.titleFieldKey ?? 'subject')] ?? '')).filter(Boolean),
+      ...savedSubjects,
+    ]));
     (async () => {
       const out: Record<string, { start: number; running: boolean }> = {};
       for (const s of subs) {
@@ -115,7 +126,7 @@ export default function TrackerDetail() {
       }
       setTimers(out);
     })();
-  }, [tracker?.id, entries.length]);
+  }, [tracker?.id, entries.length, savedSubjects.length]);
 
   useEffect(() => {
     if (!tracker) return;
@@ -196,7 +207,10 @@ export default function TrackerDetail() {
   const subjectKey = subjectFld?.key ?? 'subject';
   const durationKey = durationFld?.key ?? 'duration';
 
-  const subjects = Array.from(new Set(entries.map((e: any) => String(e.data?.[subjectKey] ?? '')).filter(Boolean)));
+  const subjects = Array.from(new Set([
+    ...entries.map((e: any) => String(e.data?.[subjectKey] ?? '')).filter(Boolean),
+    ...savedSubjects,
+  ]));
 
   const totalFor = (subject: string) => entries
     .filter((e: any) => String(e.data?.[subjectKey]) === subject)
@@ -226,7 +240,9 @@ export default function TrackerDetail() {
     if (!name) return;
     setNewSubject('');
     if (!subjects.includes(name)) {
-      // create a starter entry? Instead just track via timer; add to list by setting timer state placeholder
+      const next = [...savedSubjects, name];
+      setSavedSubjects(next);
+      await setSetting(`subjects:${tracker.id}`, JSON.stringify(next));
       setTimers((p) => ({ ...p, [name]: { start: 0, running: false } }));
     }
     toast.show(`Added ${name}`);
